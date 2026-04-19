@@ -1,4 +1,4 @@
 baseURL = 'https://zhanghui.cc/'
 locale = 'en-us'
-title = '浅尝略知'
-theme = "ananke"
+title = 'Harvey Zhang'
+theme = "PaperMod"
