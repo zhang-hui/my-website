@@ -1,0 +1,5 @@
+[author]
+   name = "名字在这"
+   image = "profile.jpg"
+   headline = "我是个好人"
+   bio = "关于我的二三事" # 出现在每篇文章的作者卡片中
