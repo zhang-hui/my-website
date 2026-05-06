@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 全景手势控制预览</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+        #video-container {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 180px;
+            height: 135px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            overflow: hidden;
+            background: #000;
+            z-index: 50;
+            transform: scaleX(-1);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+        #hand-video { width: 100%; height: 100%; object-fit: cover; }
+        #status-indicator {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 12px 24px;
+            background: rgba(15, 23, 42, 0.8);
+            color: white;
+            border-radius: 99px;
+            font-family: system-ui, -apple-system, sans-serif;
+            pointer-events: none;
+            z-index: 100;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(8px);
+            min-width: 200px;
+            text-align: center;
+        }
+        .active-status {
+            background: rgba(34, 197, 94, 0.9) !important;
+            box-shadow: 0 0 20px rgba(34, 197, 94, 0.4);
+            border-color: rgba(255, 255, 255, 0.3);
+            transform: translateX(-50%) scale(1.05);
+        }
+        #anchor-visual {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #4ade80;
+            border-radius: 50%;
+            pointer-events: none;
+            display: none;
+            z-index: 60;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 10px #4ade80;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="status-indicator">正在初始化 3D 场景...</div>
+    <div id="anchor-visual"></div>
+    
+    <div id="video-container">
+        <video id="hand-video" playsinline></video>
+    </div>
+
+    <div class="absolute bottom-5 left-5 text-white bg-black/50 p-5 rounded-xl text-sm pointer-events-none backdrop-blur-md border border-white/10 shadow-2xl">
+        <p class="font-bold text-blue-400 mb-2 flex items-center gap-2">
+            <span class="w-2 h-2 bg-blue-400 rounded-full animate-pulse"></span>
+            手势操作说明
+        </p>
+        <div class="space-y-2 opacity-90">
+            <p class="flex items-center gap-2">✋ <strong>第一步：</strong>张开手掌保持 0.5s</p>
+            <p class="flex items-center gap-2">📍 <strong>第二步：</strong>系统会锁定当前手掌位置作为基准点</p>
+            <p class="flex items-center gap-2">↔️ <strong>第三步：</strong>相对于基准点移动手掌来旋转视角</p>
+            <p class="flex items-center gap-2">✊ <strong>停止：</strong>握拳或收回手掌</p>
+        </div>
+    </div>
+
+    <script>
+        let scene, camera, renderer, sphere;
+        let lon = 0, lat = 0;
+        let phi = 0, theta = 0;
+        let onMouseDownMouseLon = 0, onMouseDownMouseLat = 0;
+        let onMouseDownPointerX = 0, onMouseDownPointerY = 0;
+        let isUserInteracting = false;
+
+        function initThree() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 1100);
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            const geometry = new THREE.SphereGeometry(500, 60, 40);
+            geometry.scale(-1, 1, 1);
+
+            const loader = new THREE.TextureLoader();
+            // 设置跨域属性
+            loader.setCrossOrigin('anonymous');
+            
+            // 使用用户指定的 Flickr 图片
+            const textureUrl = 'https://live.staticflickr.com/904/28005286028_64705e2456_h.jpg';
+            
+            statusEl.innerText = "正在加载全景贴图...";
+            
+            loader.load(
+                textureUrl,
+                (texture) => {
+                    const material = new THREE.MeshBasicMaterial({ map: texture });
+                    sphere = new THREE.Mesh(geometry, material);
+                    scene.add(sphere);
+                    statusEl.innerText = "场景就绪，等待手势...";
+                },
+                undefined,
+                (err) => {
+                    console.error("贴图加载失败:", err);
+                    statusEl.innerText = "贴图加载失败，请检查网络";
+                }
+            );
+
+            // 基础鼠标控制
+            document.addEventListener('mousedown', onPointerStart);
+            document.addEventListener('mousemove', onPointerMove);
+            document.addEventListener('mouseup', onPointerUp);
+            document.addEventListener('wheel', (e) => {
+                camera.fov = THREE.MathUtils.clamp(camera.fov + e.deltaY * 0.05, 10, 100);
+                camera.updateProjectionMatrix();
+            });
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+            
+            animate();
+        }
+
+        function onPointerStart(event) {
+            isUserInteracting = true;
+            onMouseDownPointerX = event.clientX;
+            onMouseDownPointerY = event.clientY;
+            onMouseDownMouseLon = lon;
+            onMouseDownMouseLat = lat;
+        }
+
+        function onPointerMove(event) {
+            if (isUserInteracting) {
+                lon = (onMouseDownPointerX - event.clientX) * 0.15 + onMouseDownMouseLon;
+                lat = (event.clientY - onMouseDownPointerY) * 0.15 + onMouseDownMouseLat;
+            }
+        }
+
+        function onPointerUp() { isUserInteracting = false; }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            updateCamera();
+        }
+
+        function updateCamera() {
+            lat = Math.max(-85, Math.min(85, lat));
+            phi = THREE.MathUtils.degToRad(90 - lat);
+            theta = THREE.MathUtils.degToRad(lon);
+            const x = 500 * Math.sin(phi) * Math.cos(theta);
+            const y = 500 * Math.cos(phi);
+            const z = 500 * Math.sin(phi) * Math.sin(theta);
+            camera.lookAt(x, y, z);
+            renderer.render(scene, camera);
+        }
+
+        // --- 手势识别逻辑 ---
+        const videoElement = document.getElementById('hand-video');
+        const statusEl = document.getElementById('status-indicator');
+        const anchorEl = document.getElementById('anchor-visual');
+        
+        let handActive = false;
+        let openHandStartTime = 0;
+        const ACTIVATION_THRESHOLD = 500;
+        let isActivated = false;
+        
+        // 相对位移基准点 (Anchor)
+        let anchorX = 0;
+        let anchorY = 0;
+
+        function initMediaPipe() {
+            const hands = new Hands({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+            });
+
+            hands.setOptions({
+                maxNumHands: 1,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.7,
+                minTrackingConfidence: 0.7
+            });
+
+            hands.onResults(onHandResults);
+
+            const cameraPipe = new Camera(videoElement, {
+                onFrame: async () => {
+                    await hands.send({ image: videoElement });
+                },
+                width: 640,
+                height: 480
+            });
+            cameraPipe.start();
+        }
+
+        function onHandResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                const isOpen = checkIfHandOpen(landmarks);
+                
+                if (isOpen) {
+                    if (!handActive) {
+                        handActive = true;
+                        openHandStartTime = Date.now();
+                    } else {
+                        const duration = Date.now() - openHandStartTime;
+                        if (duration >= ACTIVATION_THRESHOLD) {
+                            // 激活时刻
+                            if (!isActivated) {
+                                isActivated = true;
+                                // 记录当前时刻的手掌位置作为基准锚点
+                                anchorX = landmarks[9].x; 
+                                anchorY = landmarks[9].y;
+                                showAnchorFeedback(anchorX, anchorY);
+                            }
+                            handleGestureMove(landmarks);
+                        } else {
+                            const progress = Math.min(100, (duration/500 * 100)).toFixed(0);
+                            statusEl.innerText = `✋ 准备锁定基准点... ${progress}%`;
+                        }
+                    }
+                } else {
+                    deactivateGestureControl();
+                }
+            } else {
+                deactivateGestureControl();
+            }
+        }
+
+        function checkIfHandOpen(landmarks) {
+            const tips = [8, 12, 16, 20];
+            const mids = [6, 10, 14, 18];
+            let extendedFingers = 0;
+            for (let i = 0; i < tips.length; i++) {
+                if (landmarks[tips[i]].y < landmarks[mids[i]].y) extendedFingers++;
+            }
+            return extendedFingers >= 3;
+        }
+
+        function handleGestureMove(landmarks) {
+            statusEl.innerText = "✨ 控制中：相对于基准点移动";
+            statusEl.classList.add('active-status');
+
+            const currentX = landmarks[9].x; 
+            const currentY = landmarks[9].y;
+
+            // 计算相对于锚点的偏移
+            const deltaX = (currentX - anchorX); 
+            const deltaY = (currentY - anchorY);
+            
+            const deadzone = 0.03; // 保持微小死区提高稳定性
+
+            if (Math.abs(deltaX) > deadzone) {
+                // 灵敏度随位移增大而非线性增加
+                const speed = Math.pow(Math.abs(deltaX), 1.2) * 35 * Math.sign(deltaX);
+                lon += speed;
+            }
+            if (Math.abs(deltaY) > deadzone) {
+                const speed = Math.pow(Math.abs(deltaY), 1.2) * 35 * Math.sign(deltaY);
+                lat -= speed;
+            }
+        }
+
+        function showAnchorFeedback(x, y) {
+            // 在摄像头预览区显示一个视觉提示，告知用户基准点在哪里
+            // 注意 landmarks.x 是 0-1 范围
+            anchorEl.style.display = 'block';
+            // 因为视频容器是镜像的且位于右下角，这里简化处理，仅在控制台或状态栏反馈
+            console.log("基准点已锁定:", x, y);
+        }
+
+        function deactivateGestureControl() {
+            if (handActive || isActivated) {
+                handActive = false;
+                isActivated = false;
+                statusEl.innerText = "等待手势检测...";
+                statusEl.classList.remove('active-status');
+                anchorEl.style.display = 'none';
+            }
+        }
+
+        window.onload = () => {
+            initThree();
+            initMediaPipe();
+        };
+    </script>
+</body>
+</html>

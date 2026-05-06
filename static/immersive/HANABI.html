@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HANABI - Multi-User Gesture Conductor</title>
+    <!-- MediaPipe Hands ライブリの読み込み -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <style>
+        :root {
+            --neon-cyan: #00f3ff;
+            --neon-magenta: #ff00ff;
+            --bg-dark: #050505;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: var(--bg-dark);
+            font-family: 'Segoe UI', 'Hiragino Kaku Gothic ProN', sans-serif;
+            color: white;
+        }
+
+        #canvas {
+            display: block;
+            filter: contrast(1.1) brightness(1.1);
+        }
+
+        /* 初期オーバーレイ */
+        #overlay {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: radial-gradient(circle at center, #111 0%, #000 100%);
+            z-index: 100;
+            transition: opacity 1s ease;
+        }
+
+        .loader-content {
+            text-align: center;
+            max-width: 600px;
+            padding: 40px;
+            border: 1px solid rgba(0, 243, 255, 0.2);
+            background: rgba(0, 0, 0, 0.8);
+            box-shadow: 0 0 50px rgba(0, 0, 0, 1);
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 20px;
+            letter-spacing: 10px;
+            background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-transform: uppercase;
+        }
+
+        .instruction-item {
+            margin: 15px 0;
+            font-size: 0.95rem;
+            color: #ccc;
+            line-height: 1.8;
+            text-align: left;
+        }
+
+        .btn-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+            margin-top: 30px;
+        }
+
+        .start-btn {
+            background: transparent;
+            border: 2px solid var(--neon-cyan);
+            color: var(--neon-cyan);
+            padding: 18px 50px;
+            font-size: 1.2rem;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 5px;
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .start-btn:hover:not(:disabled) {
+            background: var(--neon-cyan);
+            color: #000;
+            box-shadow: 0 0 40px var(--neon-cyan);
+            transform: scale(1.05);
+        }
+
+        .start-btn:disabled {
+            border-color: #444;
+            color: #444;
+            cursor: wait;
+        }
+
+        #fullscreen-toggle {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: rgba(255, 255, 255, 0.4);
+            padding: 8px 12px;
+            font-size: 0.7rem;
+            cursor: pointer;
+            z-index: 60;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: all 0.3s;
+        }
+
+        #fullscreen-toggle:hover {
+            background: rgba(255, 255, 255, 0.15);
+            color: white;
+        }
+
+        #video-container {
+            position: absolute;
+            bottom: 30px;
+            right: 30px;
+            width: 220px;
+            height: 165px;
+            border: 2px solid rgba(0, 243, 255, 0.3);
+            border-radius: 12px;
+            overflow: hidden;
+            transform: scaleX(-1);
+            opacity: 0.4;
+            transition: opacity 0.3s;
+            z-index: 50;
+        }
+
+        #video-container:hover { opacity: 1; }
+        #input_video { width: 100%; height: 100%; object-fit: cover; }
+
+        #hud {
+            position: absolute;
+            top: 30px;
+            left: 30px;
+            pointer-events: none;
+            z-index: 50;
+        }
+
+        .hud-item {
+            font-size: 0.8rem;
+            letter-spacing: 3px;
+            color: rgba(255, 255, 255, 0.6);
+            margin-bottom: 12px;
+            text-transform: uppercase;
+        }
+
+        .hidden { opacity: 0; pointer-events: none; }
+    </style>
+</head>
+<body>
+
+    <div id="overlay">
+        <div class="loader-content">
+            <h1>HANABI MULTI</h1>
+            <div class="instruction-item">1. 下のボタンを押してカメラを起動（複数人での操作に対応）。</div>
+            <div class="instruction-item">2. 起動後、自動的に全画面モードになります。</div>
+            <div class="instruction-item">3. <b>最大4つの手</b>を同時に認識して花火を打ち上げられます。</div>
+            <div class="btn-group">
+                <button class="start-btn" id="init-btn">システム起動</button>
+            </div>
+        </div>
+    </div>
+
+    <button id="fullscreen-toggle">FULLSCREEN [F]</button>
+
+    <div id="hud">
+        <div class="hud-item">ACTIVE HANDS: <span id="hand-count" style="color: var(--neon-cyan)">0</span></div>
+        <div class="hud-item" style="font-size: 0.6rem; opacity: 0.5;">MULTI-USER MODE ENABLED</div>
+    </div>
+
+    <div id="video-container">
+        <video id="input_video"></video>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <script>
+        /** 空間オーディオエンジン */
+        class SoundEngine {
+            constructor() {
+                this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                this.masterGain = this.ctx.createGain();
+                this.masterGain.connect(this.ctx.destination);
+                this.masterGain.gain.value = 0.5;
+                // 各手ごとにチャージ音を管理するためのマップ
+                this.chargeSounds = new Map();
+            }
+            playLaunch() {
+                const osc = this.ctx.createOscillator();
+                const g = this.ctx.createGain();
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(120, this.ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(1200, this.ctx.currentTime + 0.4);
+                g.gain.setValueAtTime(0.2, this.ctx.currentTime);
+                g.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.4);
+                osc.connect(g).connect(this.masterGain);
+                osc.start(); osc.stop(this.ctx.currentTime + 0.4);
+            }
+            playExplosion(xPos, screenWidth) {
+                const panValue = Math.max(-1, Math.min(1, (xPos / screenWidth) * 2 - 1));
+                const panner = this.ctx.createStereoPanner();
+                panner.pan.setValueAtTime(panValue, this.ctx.currentTime);
+                const osc = this.ctx.createOscillator();
+                const g = this.ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(90, this.ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(30, this.ctx.currentTime + 0.3);
+                g.gain.setValueAtTime(0.8, this.ctx.currentTime);
+                g.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.5);
+                osc.connect(g).connect(panner).connect(this.masterGain);
+                osc.start(); osc.stop(this.ctx.currentTime + 0.5);
+                const bufSize = this.ctx.sampleRate * 0.4;
+                const buf = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
+                const data = buf.getChannelData(0);
+                for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+                const noise = this.ctx.createBufferSource();
+                noise.buffer = buf;
+                const noiseGain = this.ctx.createGain();
+                noiseGain.gain.setValueAtTime(0.15, this.ctx.currentTime);
+                noiseGain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.6);
+                noise.connect(noiseGain).connect(panner).connect(this.masterGain);
+                noise.start();
+            }
+            startCharge(handId) {
+                if (this.chargeSounds.has(handId)) return;
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                const filter = this.ctx.createBiquadFilter();
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(50 + handId * 10, this.ctx.currentTime);
+                filter.type = 'lowpass'; filter.Q.value = 15;
+                filter.frequency.setValueAtTime(200, this.ctx.currentTime);
+                gain.gain.setValueAtTime(0, this.ctx.currentTime);
+                gain.gain.linearRampToValueAtTime(0.15, this.ctx.currentTime + 0.1);
+                osc.connect(filter).connect(gain).connect(this.masterGain);
+                osc.start();
+                filter.frequency.exponentialRampToValueAtTime(4000, this.ctx.currentTime + 3.0);
+                this.chargeSounds.set(handId, { osc, gain, filter });
+            }
+            stopCharge(handId) {
+                const sound = this.chargeSounds.get(handId);
+                if (!sound) return;
+                const now = this.ctx.currentTime;
+                sound.gain.gain.cancelScheduledValues(now);
+                sound.gain.gain.linearRampToValueAtTime(0, now + 0.1);
+                sound.osc.stop(now + 0.1);
+                this.chargeSounds.delete(handId);
+            }
+        }
+
+        /** 物理パーティクルシステム */
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        let width, height;
+        let particles = [];
+        let rockets = [];
+        let fingerSparks = [];
+        const COLORS = [{h:190,s:100,l:60},{h:320,s:100,l:60},{h:220,s:100,l:60},{h:45,s:100,l:60},{h:280,s:100,l:60}];
+
+        class Particle {
+            constructor(x, y, h, s, l, isFingerTrail = false) {
+                this.x = x; this.y = y;
+                this.h = h + (Math.random()*40-20); this.s = s; this.l = l;
+                const angle = Math.random()*Math.PI*2;
+                const force = isFingerTrail ? (Math.random()*4+1) : (Math.random()*14+4);
+                this.vx = Math.cos(angle)*force; this.vy = Math.sin(angle)*force;
+                this.alpha = 1;
+                this.decay = isFingerTrail ? (Math.random()*0.05+0.03) : (Math.random()*0.015+0.005);
+                this.gravity = isFingerTrail ? 0.08 : 0.15;
+                this.friction = 0.95; this.history = [];
+            }
+            update() {
+                this.history.push({x:this.x,y:this.y});
+                if(this.history.length>5) this.history.shift();
+                this.vx*=this.friction; this.vy*=this.friction; this.vy+=this.gravity;
+                this.x+=this.vx; this.y+=this.vy; this.alpha-=this.decay; this.h+=0.5;
+            }
+            draw() {
+                ctx.save(); ctx.globalCompositeOperation = 'lighter';
+                if(this.history.length>1){
+                    ctx.beginPath(); ctx.moveTo(this.history[0].x,this.history[0].y);
+                    for(let p of this.history) ctx.lineTo(p.x,p.y);
+                    ctx.strokeStyle = `hsla(${this.h}, ${this.s}%, ${this.l}%, ${this.alpha * 0.3})`;
+                    ctx.lineWidth = 2; ctx.stroke();
+                }
+                ctx.fillStyle = `hsla(${this.h}, ${this.s}%, ${this.l}%, ${this.alpha})`;
+                ctx.beginPath(); ctx.arc(this.x,this.y,2,0,Math.PI*2); ctx.fill(); ctx.restore();
+            }
+        }
+
+        class Rocket {
+            constructor(x, targetY, color, delay = 0) {
+                this.x = x; this.y = height + 30; this.targetY = targetY; this.color = color;
+                this.delay = delay; this.vy = -(Math.random()*6+18); this.exploded = false;
+            }
+            update() {
+                if(this.delay > 0){ this.delay--; return; }
+                this.y += this.vy; this.vy += 0.15;
+                if(Math.random() > 0.4) fingerSparks.push(new Particle(this.x,this.y,this.color.h,50,80,true));
+                if(this.vy >= -1 || this.y <= this.targetY) this.explode();
+            }
+            explode() {
+                this.exploded = true;
+                soundEngine.playExplosion(this.x, width);
+                const count = 200 + Math.floor(Math.random()*100);
+                for(let i=0; i<count; i++) particles.push(new Particle(this.x,this.y,this.color.h,this.color.s,this.color.l));
+            }
+        }
+
+        const handCountUI = document.getElementById('hand-count');
+        let soundEngine;
+        // 複数の手の状態を保持するマップ
+        const handStates = new Map();
+
+        function resize() { width = canvas.width = window.innerWidth; height = canvas.height = window.innerHeight; }
+        window.addEventListener('resize', resize); resize();
+
+        function getLaunchCount(charge) {
+            if(charge < 40) return 1; if(charge < 70) return 2;
+            if(charge < 90) return 3; if(charge < 110) return 4;
+            return Math.min(4 + Math.floor((charge-110)/15), 10);
+        }
+
+        function onResults(results) {
+            const detectedIds = new Set();
+
+            if(results.multiHandLandmarks && results.multiHandLandmarks.length > 0){
+                handCountUI.innerText = results.multiHandLandmarks.length;
+                
+                results.multiHandLandmarks.forEach((hand, index) => {
+                    const handId = index; // 簡易的にインデックスをIDとする
+                    detectedIds.add(handId);
+                    
+                    if (!handStates.has(handId)) {
+                        handStates.set(handId, { isPinching: false, chargeTimer: 0 });
+                    }
+                    const state = handStates.get(handId);
+
+                    const indexTip = hand[8]; const thumbTip = hand[4];
+                    const ix = (1-indexTip.x)*width; const iy = indexTip.y*height;
+                    const tx = (1-thumbTip.x)*width; const ty = thumbTip.y*height;
+
+                    // 指先の火花
+                    for(let i=0; i<2; i++) fingerSparks.push(new Particle(ix,iy,190 + handId * 30, 80, 70, true));
+
+                    const dist = Math.hypot(ix-tx, iy-ty);
+                    if(dist < 50){
+                        if(!state.isPinching){
+                            state.isPinching = true;
+                            state.chargeTimer = 0;
+                            soundEngine.startCharge(handId);
+                        }
+                        state.chargeTimer += 1.5;
+                        const count = getLaunchCount(state.chargeTimer);
+                        drawChargeEffect(ix, iy, state.chargeTimer, count, handId);
+                    } else if(state.isPinching){
+                        const count = getLaunchCount(state.chargeTimer);
+                        soundEngine.stopCharge(handId);
+                        soundEngine.playLaunch();
+                        for(let i=0; i<count; i++){
+                            const color = COLORS[(handId + i) % COLORS.length];
+                            const spread = (i - (count-1)/2)*80;
+                            rockets.push(new Rocket(ix+spread, iy+(Math.random()-0.5)*150, color, i*4));
+                        }
+                        state.isPinching = false;
+                        state.chargeTimer = 0;
+                    }
+                });
+            } else {
+                handCountUI.innerText = "0";
+            }
+
+            // 画面から消えた手のチャージ音を止める
+            handStates.forEach((state, id) => {
+                if (!detectedIds.has(id)) {
+                    if (state.isPinching) {
+                        soundEngine.stopCharge(id);
+                        state.isPinching = false;
+                    }
+                    handStates.delete(id);
+                }
+            });
+        }
+
+        function drawChargeEffect(x,y,charge,count, handId) {
+            ctx.save(); ctx.globalCompositeOperation = 'lighter';
+            const radius = Math.min(charge,150); const rotation = Date.now()/(100-count*5);
+            const hueBase = 180 + handId * 40;
+            const grad = ctx.createRadialGradient(x,y,0,x,y,radius*0.6);
+            grad.addColorStop(0,'#fff'); grad.addColorStop(0.3,`hsla(${hueBase+count*15},100%,60%,0.7)`); grad.addColorStop(1,'transparent');
+            ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(x,y,radius*0.6,0,Math.PI*2); ctx.fill();
+            ctx.translate(x,y); ctx.rotate(rotation);
+            ctx.strokeStyle = `hsla(${hueBase+count*15},100%,70%,0.8)`; ctx.setLineDash([10,8]); ctx.lineWidth = 2+count;
+            ctx.beginPath(); ctx.arc(0,0,radius,0,Math.PI*2); ctx.stroke();
+            ctx.restore();
+        }
+
+        function animate() {
+            ctx.fillStyle = 'rgba(5, 5, 5, 0.2)'; ctx.fillRect(0,0,width,height);
+            for(let i=fingerSparks.length-1; i>=0; i--){
+                fingerSparks[i].update(); fingerSparks[i].draw();
+                if(fingerSparks[i].alpha<=0) fingerSparks.splice(i,1);
+            }
+            for(let i=rockets.length-1; i>=0; i--){ rockets[i].update(); if(rockets[i].exploded) rockets.splice(i,1); }
+            for(let i=particles.length-1; i>=0; i--){
+                particles[i].update(); particles[i].draw();
+                if(particles[i].alpha<=0) particles.splice(i,1);
+            }
+            requestAnimationFrame(animate);
+        }
+
+        const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+        // 最大 4 つの手を認識するように設定
+        hands.setOptions({ maxNumHands: 4, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+        hands.onResults(onResults);
+
+        const videoElement = document.getElementById('input_video');
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({ image: videoElement }); },
+            width: 640, height: 480
+        });
+
+        function toggleFullScreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(err => console.error(err));
+            } else if (document.exitFullscreen) {
+                document.exitFullscreen();
+            }
+        }
+
+        document.getElementById('fullscreen-toggle').addEventListener('click', toggleFullScreen);
+        window.addEventListener('keydown', (e) => { if(e.key.toLowerCase() === 'f') toggleFullScreen(); });
+
+        const initBtn = document.getElementById('init-btn');
+        initBtn.addEventListener('click', async () => {
+            initBtn.disabled = true;
+            initBtn.innerText = "準備中...";
+            try {
+                await camera.start();
+                soundEngine = new SoundEngine();
+                await soundEngine.ctx.resume();
+                setTimeout(() => {
+                    toggleFullScreen();
+                    document.getElementById('overlay').style.opacity = '0';
+                    setTimeout(() => document.getElementById('overlay').classList.add('hidden'), 1000);
+                    animate();
+                }, 300);
+            } catch (err) {
+                initBtn.disabled = false;
+                initBtn.innerText = "再試行";
+                alert("カメラの起動に失敗しました。");
+            }
+        });
+    </script>
+</body>
+</html>
