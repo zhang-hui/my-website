@@ -2,19 +2,19 @@
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
   <channel>
     <title>Space on For Demo</title>
-    <link>http://localhost:57344/tags/space/</link>
+    <link>http://localhost:1313/tags/space/</link>
     <description>Recent content in Space on For Demo</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
     <copyright>© 2026 </copyright>
-    <lastBuildDate>Mon, 14 Aug 2023 00:00:00 +0000</lastBuildDate><atom:link href="http://localhost:57344/tags/space/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Mon, 14 Aug 2023 00:00:00 +0000</lastBuildDate><atom:link href="http://localhost:1313/tags/space/index.xml" rel="self" type="application/rss+xml" />
     
     <item>
       <title>我的第一篇帖子</title>
-      <link>http://localhost:57344/posts/myfirstpost/</link>
+      <link>http://localhost:1313/posts/myfirstpost/</link>
       <pubDate>Mon, 14 Aug 2023 00:00:00 +0000</pubDate>
       
-      <guid>http://localhost:57344/posts/myfirstpost/</guid>
+      <guid>http://localhost:1313/posts/myfirstpost/</guid>
       <description>这是网站的第一篇你帖子</description>
       
     </item>
