@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D 全景手势控制预览</title>
+    <title>3Dパノラマジェスチャーコントロールのプレビュー</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
@@ -66,7 +66,7 @@
 </head>
 <body>
 
-    <div id="status-indicator">正在初始化 3D 场景...</div>
+    <div id="status-indicator">3Dシーンの初期化中...</div>
     <div id="anchor-visual"></div>
     
     <div id="video-container">
@@ -76,13 +76,13 @@
     <div class="absolute bottom-5 left-5 text-white bg-black/50 p-5 rounded-xl text-sm pointer-events-none backdrop-blur-md border border-white/10 shadow-2xl">
         <p class="font-bold text-blue-400 mb-2 flex items-center gap-2">
             <span class="w-2 h-2 bg-blue-400 rounded-full animate-pulse"></span>
-            手势操作说明
+            ジェスチャー操作のガイド
         </p>
         <div class="space-y-2 opacity-90">
-            <p class="flex items-center gap-2">✋ <strong>第一步：</strong>张开手掌保持 0.5s</p>
-            <p class="flex items-center gap-2">📍 <strong>第二步：</strong>系统会锁定当前手掌位置作为基准点</p>
-            <p class="flex items-center gap-2">↔️ <strong>第三步：</strong>相对于基准点移动手掌来旋转视角</p>
-            <p class="flex items-center gap-2">✊ <strong>停止：</strong>握拳或收回手掌</p>
+            <p class="flex items-center gap-2">✋ <strong>Step1：</strong>手のひらを広げた状態で0.5秒間保つ</p>
+            <p class="flex items-center gap-2">📍 <strong>Step2：</strong>システムは、現在の手の位置を基準点として固定します</p>
+            <p class="flex items-center gap-2">↔️ <strong>Step3：</strong>基準点に対して手のひらを動かして視点を回転させる</p>
+            <p class="flex items-center gap-2">✊ <strong>Stop：</strong>拳を握るか、手を引っ込める</p>
         </div>
     </div>
 
@@ -113,7 +113,7 @@
             // 使用用户指定的 Flickr 图片
             const textureUrl = 'https://live.staticflickr.com/904/28005286028_64705e2456_h.jpg';
             
-            statusEl.innerText = "正在加载全景贴图...";
+            statusEl.innerText = "パノラマ画像を読み込んでいます...";
             
             loader.load(
                 textureUrl,
@@ -121,12 +121,12 @@
                     const material = new THREE.MeshBasicMaterial({ map: texture });
                     sphere = new THREE.Mesh(geometry, material);
                     scene.add(sphere);
-                    statusEl.innerText = "场景就绪，等待手势...";
+                    statusEl.innerText = "シーンの準備完了、ジェスチャーを待機中...";
                 },
                 undefined,
                 (err) => {
-                    console.error("贴图加载失败:", err);
-                    statusEl.innerText = "贴图加载失败，请检查网络";
+                    console.error("テクスチャの読み込みに失敗しました:", err);
+                    statusEl.innerText = "テクスチャの読み込みに失敗しました，ネットワーク接続を確認してください";
                 }
             );
 
@@ -241,7 +241,7 @@
                             handleGestureMove(landmarks);
                         } else {
                             const progress = Math.min(100, (duration/500 * 100)).toFixed(0);
-                            statusEl.innerText = `✋ 准备锁定基准点... ${progress}%`;
+                            statusEl.innerText = `✋ 基準点のロック準備中... ${progress}%`;
                         }
                     }
                 } else {
@@ -263,7 +263,7 @@
         }
 
         function handleGestureMove(landmarks) {
-            statusEl.innerText = "✨ 控制中：相对于基准点移动";
+            statusEl.innerText = "✨ 制御中：基準点からの移動";
             statusEl.classList.add('active-status');
 
             const currentX = landmarks[9].x; 
@@ -291,14 +291,14 @@
             // 注意 landmarks.x 是 0-1 范围
             anchorEl.style.display = 'block';
             // 因为视频容器是镜像的且位于右下角，这里简化处理，仅在控制台或状态栏反馈
-            console.log("基准点已锁定:", x, y);
+            console.log("基準点がロックされました:", x, y);
         }
 
         function deactivateGestureControl() {
             if (handActive || isActivated) {
                 handActive = false;
                 isActivated = false;
-                statusEl.innerText = "等待手势检测...";
+                statusEl.innerText = "等ジェスチャー検出待ち...";
                 statusEl.classList.remove('active-status');
                 anchorEl.style.display = 'none';
             }
