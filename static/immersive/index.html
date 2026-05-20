@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Immersive Lab - プロトタイプ・検証ステージ</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --accent-color: #38bdf8;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --border-color: #334155;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans JP", sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2rem 1rem;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 3rem;
+            max-width: 600px;
+        }
+
+        header h1 {
+            font-size: 2.25rem;
+            font-weight: 700;
+            letter-spacing: -0.05em;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(to right, #38bdf8, #818cf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        header p {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            letter-spacing: 0.05em;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1200px;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 1.5rem;
+            padding: 0 1rem;
+        }
+
+        .card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.5rem;
+            text-decoration: none;
+            color: inherit;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+            background: linear-gradient(to right, var(--accent-color), #818cf8);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-4px);
+            border-color: #475569;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+        }
+
+        .card:hover::before {
+            opacity: 1;
+        }
+
+        .card-icon {
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+            display: inline-block;
+        }
+
+        .card-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: var(--text-main);
+            word-break: break-all;
+        }
+
+        .card-desc {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            line-height: 1.6;
+            margin-bottom: 1.5rem;
+        }
+
+        .card-action {
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--accent-color);
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+            margin-top: auto;
+        }
+
+        footer {
+            margin-top: auto;
+            padding-top: 4rem;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        @media (max-width: 640px) {
+            header h1 {
+                font-size: 1.75rem;
+            }
+            .container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>Immersive Lab</h1>
+        <p>インタラクション機能の検証・プロトタイプ空間</p>
+    </header>
+
+    <main class="container" id="card-container">
+        </main>
+
+    <footer>
+        <p>&copy; zhanghui.cc</p>
+    </footer>
+
+    <script>
+        const linksData = [
+            {
+                title: "360View.html",
+                desc: "360度パノラマビューの表示およびインタラクション検証用ベースページ",
+                icon: "🌐",
+                url: "360View.html"
+            },
+            {
+                title: "360View1.html",
+                desc: "360度パノラマビューのイテレーション版 / 代替検証用ファイル",
+                icon: "🔄",
+                url: "360View1.html"
+            },
+            {
+                title: "AudioVisualization.html",
+                desc: "オーディオビジュアライゼーションの基本実験、リアルタイム波形フィードバック",
+                icon: "📊",
+                url: "AudioVisualization.html"
+            },
+            {
+                title: "AudioVisualizationPro.html",
+                desc: "高度なオーディオビジュアライゼーション、コックピットの没入音響向けアドバンスド案",
+                icon: "✨",
+                url: "AudioVisualizationPro.html"
+            },
+            {
+                title: "ChineseChess.html",
+                desc: "ロジック実装済みのシャンチー（中国将棋）盤面・マルチインタラクションシーン",
+                icon: "☵",
+                url: "ChineseChess.html"
+            },
+            {
+                title: "GestureMock.html",
+                desc: "非接触ジェスチャー操作 / 空中ジェスチャーマッピングのシミュレーションテスト",
+                icon: "🖐️",
+                url: "GestureMock.html"
+            },
+            {
+                title: "HANABI.html",
+                desc: "花火パーティクルエフェクト検証（演出効果やアニメーション評価用）",
+                icon: "🎆",
+                url: "HANABI.html"
+            }
+        ];
+
+        const container = document.getElementById('card-container');
+
+        linksData.forEach(item => {
+            const card = document.createElement('a');
+            card.className = 'card';
+            card.href = item.url;
+            
+            card.innerHTML = `
+                <div>
+                    <span class="card-icon">${item.icon}</span>
+                    <h2 class="card-title">${item.title}</h2>
+                    <p class="card-desc">${item.desc}</p>
+                </div>
+                <div class="card-action">
+                    プレビューを開く <span style="display:inline-block; transition: transform 0.2s;">&rarr;</span>
+                </div>
+            `;
+            
+            container.appendChild(card);
+        });
+    </script>
+</body>
+</html>
