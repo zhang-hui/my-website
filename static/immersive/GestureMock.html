@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MediaPipe ジェスチャー連続制御 & 顔相対位置インタラクションプラットフォーム</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    
+    <!-- MediaPipe Holistic 核心依存包（全機能統合版 - WASM衝突を完全回避） -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
+
+    <style>
+        body {
+            font-family: 'Inter', 'SF Pro Display', -apple-system, sans-serif;
+            background-color: #0b0f19;
+        }
+        .mono-font {
+            font-family: 'JetBrains Mono', monospace;
+        }
+        /* スクロールバーのカスタマイズ */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.3);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(99, 102, 241, 0.4);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(99, 102, 241, 0.6);
+        }
+        /* アクティブ時発光エフェクト */
+        .glow-cyan {
+            box-shadow: 0 0 25px rgba(6, 182, 212, 0.45);
+        }
+        .glow-amber {
+            box-shadow: 0 0 25px rgba(245, 158, 11, 0.45);
+        }
+        .glow-rose {
+            box-shadow: 0 0 35px rgba(244, 63, 94, 0.6);
+        }
+        .glow-emerald {
+            box-shadow: 0 0 35px rgba(16, 185, 129, 0.6);
+        }
+        /* カメラ映像の反転（鏡面効果） */
+        .mirrored-video {
+            transform: scaleX(-1);
+        }
+    </style>
+</head>
+<body class="text-slate-100 min-h-screen flex flex-col">
+
+    <!-- ヘッダー -->
+    <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur-md sticky top-0 z-50 px-6 py-4">
+        <div class="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
+            <div class="flex items-center gap-3">
+                <div class="p-2 bg-gradient-to-tr from-indigo-500 to-cyan-400 rounded-xl text-white shadow-lg shadow-indigo-500/20">
+                    <i class="fa-solid fa-hand-sparkles text-xl animate-pulse"></i>
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold bg-gradient-to-r from-white via-slate-100 to-indigo-300 bg-clip-text text-transparent">
+                        MediaPipe 手勢・顔相対位置連続インタラクションテストプラットフォーム
+                    </h1>
+                    <p class="text-xs text-slate-400">Gesture & Face Relative Spatial Alignment Control Demo</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <span id="camera-status" class="px-3 py-1 text-xs rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20 flex items-center gap-1.5">
+                    <span class="h-2 w-2 rounded-full bg-rose-500 animate-ping"></span>
+                    カメラ未接続
+                </span>
+            </div>
+        </div>
+    </header>
+
+    <!-- メインコンテンツ -->
+    <main class="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+        
+        <!-- 左側：リアルタイムキャプチャ & 骨骼描画 (16:9) (占 5/12) -->
+        <div class="lg:col-span-5 flex flex-col gap-4">
+            <div class="bg-slate-900/90 border border-slate-800 rounded-2xl overflow-hidden shadow-xl flex flex-col h-full min-h-[480px]">
+                
+                <div class="p-4 border-b border-slate-800/80 flex justify-between items-center bg-slate-950/40">
+                    <div class="flex items-center gap-2">
+                        <i class="fa-solid fa-video text-indigo-400"></i>
+                        <span class="text-sm font-semibold">リアルタイム映像キャプチャ & 3Dマスク・骨骼描画 (16:9)</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button id="btn-toggle-cam" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition text-xs font-semibold rounded-lg flex items-center gap-1.5 shadow-lg shadow-indigo-600/10">
+                            <i class="fa-solid fa-power-off"></i> カメラを起動
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 完璧な16:9アスペクト比ビデオコンテナ -->
+                <div class="relative flex-1 aspect-video bg-slate-950 flex items-center justify-center overflow-hidden min-h-[320px]">
+                    <!-- 非表示のビデオストリーム -->
+                    <video id="webcam" class="hidden mirrored-video" autoplay playsinline></video>
+                    <!-- 骨格を描画するキャンバス（object-containに変更し、アスペクト比を維持してフィッティング） -->
+                    <canvas id="output-canvas" class="absolute max-w-full max-h-full object-contain z-10 mirrored-video"></canvas>
+                    
+                    <!-- カメラ未起動時のプレースホルダー -->
+                    <div id="canvas-placeholder" class="absolute inset-0 flex flex-col items-center justify-center text-center p-6 bg-slate-950/95 z-20 transition-opacity duration-300">
+                        <div class="p-4 bg-slate-900 rounded-full border border-slate-800 mb-4 text-slate-400">
+                            <i class="fa-solid fa-camera text-3xl"></i>
+                        </div>
+                        <p class="font-medium text-slate-300">カメラが起動していません</p>
+                        <p class="text-xs text-slate-500 max-w-xs mt-2 leading-relaxed">
+                            上の「カメラを起動」ボタンをクリックし、カメラへのアクセスを許可してください。<br>3本指の高さ制御と、口元に食指を立てる「シー（消音）」の相対位置認識をテストできます。
+                        </p>
+                    </div>
+
+                    <!-- リアルタイム HUD 情報パネル -->
+                    <div id="gesture-hud" class="absolute top-4 left-4 z-30 bg-slate-900/95 border border-slate-750 rounded-xl p-3 backdrop-blur-md hidden w-[200px]">
+                        <p class="text-[10px] uppercase tracking-wider text-slate-400 font-bold">ジェスチャー検出状態</p>
+                        <p id="hud-gesture-name" class="text-sm font-bold text-indigo-400 mt-0.5">なし</p>
+                        <div class="mt-2">
+                            <div class="flex justify-between text-[9px] text-slate-400 mb-1">
+                                <span>有効化進捗 (0.5s必要)</span>
+                                <span id="hud-progress-text" class="font-mono text-indigo-400">0%</span>
+                            </div>
+                            <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                                <div id="hud-progress-bar" class="bg-gradient-to-r from-indigo-500 to-cyan-400 h-full w-0 transition-all duration-75"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 右側：インジケータバー、ルール、およびリアルタイムログ (占 7/12) -->
+        <div class="lg:col-span-7 flex flex-col gap-6">
+            
+            <!-- 特大インジケータバーモジュール -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                
+                <!-- 特大音量調節パネル -->
+                <div id="panel-volume" class="bg-slate-900/90 border border-slate-800/80 p-8 rounded-3xl flex flex-col gap-5 transition-all duration-300 relative overflow-hidden">
+                    <div class="absolute top-0 left-0 h-1.5 w-full bg-slate-800">
+                        <div id="bar-volume-active-indicator" class="h-full w-0 bg-cyan-400 transition-all duration-300"></div>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <div class="flex items-center gap-3">
+                            <div class="p-3 bg-cyan-500/15 text-cyan-400 rounded-xl">
+                                <i class="fa-solid fa-volume-high text-2xl"></i>
+                            </div>
+                            <div>
+                                <span class="text-sm text-slate-400 block font-semibold tracking-wide">音量調整</span>
+                                <span id="vol-status-text" class="text-xs font-bold text-slate-500 uppercase tracking-wider">未アクティブ</span>
+                            </div>
+                        </div>
+                        <span id="val-volume" class="text-5xl font-black text-cyan-400 mono-font">50%</span>
+                    </div>
+                    <!-- インジケータゲージ -->
+                    <div class="w-full bg-slate-950/80 h-16 rounded-2xl relative overflow-hidden border border-slate-800/80 shadow-inner">
+                        <div id="bar-volume" class="bg-gradient-to-r from-cyan-600 to-blue-500 h-full rounded-l-2xl transition-all duration-100 shadow-lg" style="width: 50%;"></div>
+                        <div class="absolute inset-0 flex justify-between items-center px-6 pointer-events-none text-xs text-slate-500 font-extrabold font-mono tracking-widest">
+                            <span>最小 (0%)</span>
+                            <span>最大 (100%)</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 特大装置輝度調節パネル -->
+                <div id="panel-brightness" class="bg-slate-900/90 border border-slate-800/80 p-8 rounded-3xl flex flex-col gap-5 transition-all duration-300 relative overflow-hidden">
+                    <div class="absolute top-0 left-0 h-1.5 w-full bg-slate-800">
+                        <div id="bar-brightness-active-indicator" class="h-full w-0 bg-amber-400 transition-all duration-300"></div>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <div class="flex items-center gap-3">
+                            <div class="p-3 bg-amber-500/15 text-amber-400 rounded-xl">
+                                <i class="fa-solid fa-sun text-2xl"></i>
+                            </div>
+                            <div>
+                                <span class="text-sm text-slate-400 block font-semibold tracking-wide">輝度調整</span>
+                                <span id="bright-status-text" class="text-xs font-bold text-slate-500 uppercase tracking-wider">未アクティブ</span>
+                            </div>
+                        </div>
+                        <span id="val-brightness" class="text-5xl font-black text-amber-400 mono-font">50%</span>
+                    </div>
+                    <!-- インジケータゲージ -->
+                    <div class="w-full bg-slate-950/80 h-16 rounded-2xl relative overflow-hidden border border-slate-800/80 shadow-inner">
+                        <div id="bar-brightness" class="bg-gradient-to-r from-amber-500 to-orange-400 h-full rounded-l-2xl transition-all duration-100 shadow-lg" style="width: 50%;"></div>
+                        <div class="absolute inset-0 flex justify-between items-center px-6 pointer-events-none text-xs text-slate-500 font-extrabold font-mono tracking-widest">
+                            <span>最小 (0%)</span>
+                            <span>最大 (100%)</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ジェスチャー制御ルールガイド -->
+            <div class="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-5">
+                <h3 class="text-sm font-semibold mb-3 flex items-center gap-2">
+                    <i class="fa-solid fa-circle-info text-indigo-400"></i>
+                    制御モードとジェスチャー・位置判定ルール
+                </h3>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <!-- ルール：三指高さ制御 -->
+                    <div class="bg-slate-950/60 border border-slate-800/60 p-4 rounded-xl flex gap-3">
+                        <div class="flex flex-col items-center">
+                            <div class="h-8 w-8 rounded-lg bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center text-indigo-300 font-bold text-sm shadow-sm">
+                                1
+                            </div>
+                            <div class="h-full w-0.5 bg-slate-800 my-1"></div>
+                        </div>
+                        <div>
+                            <h4 class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                                <span class="px-1.5 py-0.5 bg-indigo-500/20 text-indigo-300 rounded text-[9px]">モード一</span>
+                                三指高さ垂直調節
+                            </h4>
+                            <p class="text-xs text-slate-400 mt-2 leading-relaxed">
+                                <strong class="text-slate-300">起動：</strong>人差し指、中指、薬指を伸ばし、親指と小指を曲げて <span class="text-indigo-400 font-semibold">0.5秒間</span> 保持。<br>
+                                <strong class="text-slate-300">分岐：</strong>手が画面<b>左半分</b>にあれば「輝度調整」、<b>右半分</b>にあれば「音量調整」が起動。<br>
+                                <strong class="text-slate-300">連続制御：</strong>手を上に動かすと値が増加、下に動かすと減少。
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- ルール：口元シー静音認識 -->
+                    <div class="bg-slate-950/60 border border-slate-800/60 p-4 rounded-xl flex gap-3">
+                        <div class="flex flex-col items-center">
+                            <div class="h-8 w-8 rounded-lg bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-300 font-bold text-sm shadow-sm">
+                                2
+                            </div>
+                            <div class="h-full w-0.5 bg-slate-800 my-1"></div>
+                        </div>
+                        <div>
+                            <h4 class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                                <span class="px-1.5 py-0.5 bg-rose-500/20 text-rose-300 rounded text-[9px]">モード二</span>
+                                口元「シー（消音）」
+                            </h4>
+                            <p class="text-xs text-slate-400 mt-2 leading-relaxed">
+                                <strong class="text-rose-300">起動：</strong>食指を垂直に伸ばし、他の指を曲げた状態で、その食指を<b>口元・鼻の前</b>に配置し、<span class="text-rose-400 font-semibold">0.5秒間</span> 保持。<br>
+                                <strong class="text-rose-300">効果：</strong>空間位置関係が揃うと自動アクティブ。<b>直前の音量を記憶</b>した上で、音量を即座に <b>0% (消音)</b> に設定。
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- ルール：OK手勢復帰 -->
+                    <div class="bg-slate-950/60 border border-slate-800/60 p-4 rounded-xl flex gap-3">
+                        <div class="flex flex-col items-center">
+                            <div class="h-8 w-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-300 font-bold text-sm shadow-sm">
+                                3
+                            </div>
+                            <div class="h-full w-0.5 bg-slate-800 my-1"></div>
+                        </div>
+                        <div>
+                            <h4 class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                                <span class="px-1.5 py-0.5 bg-emerald-500/20 text-emerald-300 rounded text-[9px]">モード三</span>
+                                「OK（音量復元）」
+                            </h4>
+                            <p class="text-xs text-slate-400 mt-2 leading-relaxed">
+                                <strong class="text-emerald-300">起動：</strong>親指と人差し指の先を合わせ、他3指を伸ばす「OK」手勢を <span class="text-emerald-400 font-semibold">0.5秒間</span> 保持。<br>
+                                <strong class="text-emerald-300">効果：</strong>消音中（または音量0%）の場合、<b>消音前に記憶していた音量レベル</b>へと瞬時に値を復元します。
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- リアルタイムイベントログコンソール -->
+            <div class="bg-slate-900/90 border border-slate-800/80 rounded-2xl overflow-hidden flex-1 flex flex-col min-h-[160px] max-h-[220px]">
+                <div class="px-4 py-2 bg-slate-950 border-b border-slate-800/80 flex justify-between items-center">
+                    <span class="text-xs font-bold text-slate-400 flex items-center gap-1.5">
+                        <span class="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                        リアルタイムイベントログターミナル
+                    </span>
+                    <button id="btn-clear-log" class="text-[10px] text-slate-500 hover:text-slate-300 transition">
+                        <i class="fa-solid fa-trash-can"></i> クリア
+                    </button>
+                </div>
+                <div id="log-container" class="p-3 overflow-y-auto font-mono text-[11px] text-emerald-400/95 leading-relaxed bg-slate-950/60 flex-1 space-y-1">
+                    <div class="text-slate-500">// コンソール準備完了。カメラを起動してジェスチャー・顔相対位置認識のテストを開始してください...</div>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <script>
+        // DOM要素の取得
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('output-canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const canvasPlaceholder = document.getElementById('canvas-placeholder');
+        const btnToggleCam = document.getElementById('btn-toggle-cam');
+        const cameraStatusText = document.getElementById('camera-status');
+        
+        // HUD & インジケータバー関連
+        const gestureHud = document.getElementById('gesture-hud');
+        const hudGestureName = document.getElementById('hud-gesture-name');
+        const hudProgressBar = document.getElementById('hud-progress-bar');
+        const hudProgressText = document.getElementById('hud-progress-text');
+        
+        const valVolume = document.getElementById('val-volume');
+        const barVolume = document.getElementById('bar-volume');
+        const panelVolume = document.getElementById('panel-volume');
+        const volStatusText = document.getElementById('vol-status-text');
+        const barVolActiveInd = document.getElementById('bar-volume-active-indicator');
+        
+        const valBrightness = document.getElementById('val-brightness');
+        const barBrightness = document.getElementById('bar-brightness');
+        const panelBrightness = document.getElementById('panel-brightness');
+        const brightStatusText = document.getElementById('bright-status-text');
+        const barBrightActiveInd = document.getElementById('bar-brightness-active-indicator');
+        
+        const logContainer = document.getElementById('log-container');
+        const btnClearLog = document.getElementById('btn-clear-log');
+
+        // システムコアステート
+        let systemState = {
+            volume: 50,
+            preMuteVolume: 50, // 静音前の音量を一時保持
+            brightness: 50,
+            
+            // ジェスチャー状態
+            currentDetectedGesture: 'NONE', // 'NONE' | 'THREE_FINGER_HEURISTIC' | 'SHUSH_HEURISTIC' | 'OK_HEURISTIC'
+            activeControlMode: 'NONE',      // 'NONE' | 'ACTIVE_BRIGHTNESS' | 'ACTIVE_VOLUME' | 'ACTIVE_SHUSH' | 'ACTIVE_RESTORE'
+            
+            // 0.5秒 (500ms) ホールド用タイマー
+            activationTimerStart: null,
+            activationProgress: 0,
+            
+            // 基準座標と初期パラメータ値
+            mode2RefY: null,
+            mode2RefVal: null,
+            
+            // カメラと顔追跡ステート
+            cameraActive: false,
+            cameraInstance: null,
+            currentFaceResult: null // 最新の顔認識データ
+        };
+
+        // ログ出力用ヘルパー
+        function logEvent(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString('ja-JP', { hour12: false });
+            let colorClass = 'text-emerald-400';
+            if (type === 'warn') colorClass = 'text-amber-400';
+            if (type === 'success') colorClass = 'text-cyan-400 font-bold';
+            if (type === 'error') colorClass = 'text-rose-400';
+            
+            const logLine = document.createElement('div');
+            logLine.innerHTML = `<span class="text-slate-600">[${timestamp}]</span> <span class="${colorClass}">${message}</span>`;
+            logContainer.appendChild(logLine);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        // ログクリア
+        btnClearLog.addEventListener('click', () => {
+            logContainer.innerHTML = `<div class="text-slate-500">// ログがクリアされました...</div>`;
+        });
+
+        // 音量値変更 (0-100制限)
+        function setVolume(value) {
+            systemState.volume = Math.max(0, Math.min(100, Math.round(value)));
+            valVolume.textContent = `${systemState.volume}%`;
+            barVolume.style.width = `${systemState.volume}%`;
+        }
+
+        // 最小輝度値変更 (0-100制限)
+        function setBrightness(value) {
+            systemState.brightness = Math.max(0, Math.min(100, Math.round(value)));
+            valBrightness.textContent = `${systemState.brightness}%`;
+            barBrightness.style.width = `${systemState.brightness}%`;
+        }
+
+        // 制御状態の遷移管理 (状態マシン)
+        function transitionToMode(newMode) {
+            if (systemState.activeControlMode === newMode) return;
+            
+            // 既存のアクティブ発光スタイルを解除
+            panelVolume.className = panelVolume.className.replace(/ glow-cyan border-cyan-500\/50| glow-rose border-rose-500\/60| glow-emerald border-emerald-500\/50/g, '');
+            panelBrightness.className = panelBrightness.className.replace(/ glow-amber border-amber-500\/50/g, '');
+            barVolActiveInd.style.width = '0%';
+            barVolActiveInd.className = "h-full w-0 bg-cyan-400 transition-all duration-300";
+            barBrightActiveInd.style.width = '0%';
+            volStatusText.textContent = "未アクティブ";
+            volStatusText.className = "text-xs font-bold text-slate-500 uppercase";
+            brightStatusText.textContent = "未アクティブ";
+            brightStatusText.className = "text-xs font-bold text-slate-500 uppercase";
+
+            systemState.activeControlMode = newMode;
+            logEvent(`ステート遷移 -> <strong>${newMode}</strong>`, 'info');
+
+            if (newMode === 'ACTIVE_VOLUME') {
+                logEvent(`🌟 【3本指制御アクティブ】音量高さ垂直調整（画面右側で検出）`, "success");
+                panelVolume.className += " glow-cyan border-cyan-500/50";
+                barVolActiveInd.style.width = '100%';
+                volStatusText.textContent = "高さ制御中";
+                volStatusText.className = "text-xs font-bold text-cyan-400 uppercase animate-pulse";
+            } 
+            else if (newMode === 'ACTIVE_BRIGHTNESS') {
+                logEvent(`🌟 【3本指制御アクティブ】輝度高さ垂直調整（画面左側で検出）`, "success");
+                panelBrightness.className += " glow-amber border-amber-500/50";
+                barBrightActiveInd.style.width = '100%';
+                brightStatusText.textContent = "高さ制御中";
+                brightStatusText.className = "text-xs font-bold text-amber-400 uppercase animate-pulse";
+            } 
+            else if (newMode === 'ACTIVE_SHUSH') {
+                // 静音前の現在音量を記録 (0でない場合のみ更新)
+                if (systemState.volume > 0) {
+                    systemState.preMuteVolume = systemState.volume;
+                    logEvent(`🔇 【記憶完了】消音前の音量「${systemState.preMuteVolume}%」を記憶しました。`, "success");
+                }
+                logEvent(`🤫 【消音アクション発動】口元での「シー」ジェスチャー確定！音量を 0% に設定しました。`, "success");
+                panelVolume.className += " glow-rose border-rose-500/60";
+                barVolActiveInd.className = "h-full w-0 bg-rose-500 transition-all duration-300";
+                barVolActiveInd.style.width = '100%';
+                volStatusText.textContent = "消音中 (シー)";
+                volStatusText.className = "text-xs font-bold text-rose-400 uppercase animate-pulse";
+                setVolume(0);
+            }
+            else if (newMode === 'ACTIVE_RESTORE') {
+                logEvent(`👌 【音量復帰アクション発動】OKジェスチャー確定！音量を消音前「${systemState.preMuteVolume}%」に戻します。`, "success");
+                panelVolume.className += " glow-emerald border-emerald-500/50";
+                barVolActiveInd.className = "h-full w-0 bg-emerald-400 transition-all duration-300";
+                barVolActiveInd.style.width = '100%';
+                volStatusText.textContent = `音量復元中 (${systemState.preMuteVolume}%)`;
+                volStatusText.className = "text-xs font-bold text-emerald-400 uppercase animate-pulse";
+                setVolume(systemState.preMuteVolume);
+                
+                // 復帰完了後、速やかにNONE状態に遷移させる
+                setTimeout(() => {
+                    transitionToMode('NONE');
+                }, 1000);
+            }
+            else if (newMode === 'NONE') {
+                logEvent("🔒 ジェスチャー離退または変化により制御解除。再アクティブには0.5秒保持してください。", "warn");
+            }
+        }
+
+        // 2点間の距離算出
+        function calculateDistance(pt1, pt2) {
+            const dx = pt1.x - pt2.x;
+            const dy = pt1.y - pt2.y;
+            const dz = pt1.z - pt2.z;
+            return Math.sqrt(dx * dx + dy * dy + dz * dz);
+        }
+
+        // 手形・顔位置融合ジェスチャーの判定ルール
+        function classifyGesture(landmarks) {
+            // 指先(Tip)がPIP関節のY座標よりも小さい(画面上で上にある)場合、指が「伸びている」と判定
+            const isIndexExtended = landmarks[8].y < landmarks[6].y && landmarks[6].y < landmarks[5].y;
+            const isMiddleExtended = landmarks[12].y < landmarks[10].y && landmarks[10].y < landmarks[9].y;
+            const isRingExtended = landmarks[16].y < landmarks[14].y && landmarks[14].y < landmarks[13].y;
+            const isPinkyExtended = landmarks[20].y < landmarks[18].y && landmarks[18].y < landmarks[17].y;
+            
+            const thumbTipToPalmDist = calculateDistance(landmarks[4], landmarks[9]);
+            const thumbJointToPalmDist = calculateDistance(landmarks[3], landmarks[9]);
+            const isThumbExtended = thumbTipToPalmDist > thumbJointToPalmDist * 1.15;
+
+            // 1. 三指制御ジェスチャー（食指・中指・薬指が伸び、親指・小指が閉じている状態）
+            if (isIndexExtended && isMiddleExtended && isRingExtended && !isPinkyExtended && !isThumbExtended) {
+                return 'THREE_FINGER_HEURISTIC';
+            }
+
+            // 2. 「シー（静音）」ジェスチャー（食指のみ伸ばし、他の指が全て閉じている ＋ 顔が検出されており口元に指がある状態）
+            if (isIndexExtended && !isMiddleExtended && !isRingExtended && !isPinkyExtended) {
+                if (systemState.currentFaceResult) {
+                    const mouth = systemState.currentFaceResult; // 口の中心座標
+                    
+                    // 指の中間関節 (Landmark 7) と口の中心の水平距離チェック (X軸のズレが 8% 未満)
+                    const hDistMouth = Math.abs(landmarks[7].x - mouth.x);
+                    
+                    // 指先 (8) が口よりも上にあり、かつ指の付け根 (5) が口よりも下にある（指が口の垂直エリアをまたいでいる）
+                    const vOverlap = (landmarks[8].y < mouth.y) && (landmarks[5].y > mouth.y);
+                    
+                    if (hDistMouth < 0.08 && vOverlap) {
+                        return 'SHUSH_HEURISTIC';
+                    }
+                }
+            }
+
+            // 3. 「OK（復帰）」ジェスチャー（親指の先端と人差し指の先端が極めて近く、かつ中指・薬指・小指が真っ直ぐ伸びている）
+            const thumbTipToIndexTipDist = calculateDistance(landmarks[4], landmarks[8]);
+            if (thumbTipToIndexTipDist < 0.045 && isMiddleExtended && isRingExtended && isPinkyExtended) {
+                return 'OK_HEURISTIC';
+            }
+
+            return 'NONE';
+        }
+
+        // MediaPipe 骨骼・顔認識統合レンダリングループ
+        function onResults(results) {
+            if (results.image) {
+                // キャンバスのピクセルサイズを入力画像の解像度に完全に同期（歪みの根本解決）
+                if (canvasElement.width !== results.image.width || canvasElement.height !== results.image.height) {
+                    canvasElement.width = results.image.width;
+                    canvasElement.height = results.image.height;
+                }
+            }
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // ビデオフレームを描画
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            // =======================================================
+            // 3Dフェイスメッシュ・マスクの描画 (MediaPipe 公式デモスタイル)
+            // =======================================================
+            if (results.faceLandmarks && results.faceLandmarks.length > 0) {
+                try {
+                    // 1. サイバー幾何学メッシュグリッド (FACEMESH_TESSELATION) の描画
+                    if (typeof FACEMESH_TESSELATION !== 'undefined') {
+                        drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_TESSELATION, {
+                            color: 'rgba(99, 102, 241, 0.15)', // 近未来的なインディゴカラーの超極細グリッド
+                            lineWidth: 0.8
+                        });
+                    }
+                    
+                    // 2. 主要部分の輪郭線 (FACEMESH_CONTOURS) のネオンレンダリング
+                    if (typeof FACEMESH_CONTOURS !== 'undefined') {
+                        drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_CONTOURS, {
+                            color: 'rgba(6, 182, 212, 0.45)', // ネオンシアン色の表情輪郭
+                            lineWidth: 1.0
+                        });
+                    }
+
+                    // 3. 唇の輪郭線 (FACEMESH_LIPS) の専用ネオンカラー強調
+                    if (typeof FACEMESH_LIPS !== 'undefined') {
+                        drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_LIPS, {
+                            color: 'rgba(244, 63, 94, 0.6)', // 嘘(シー)ジェスチャーを意識したローズピンクネオン
+                            lineWidth: 1.5
+                        });
+                    }
+                } catch (maskErr) {
+                    // 例外発生時はコンソールにのみエラーを出力し、ジェスチャー認識ロジックへの干渉を防ぐ
+                    console.warn("Face Mask Rendering Error: ", maskErr);
+                }
+
+                // 顔から口元座標を取得（Face Mesh 13番 & 14番の中央を口の中心として抽出）
+                const mouth13 = results.faceLandmarks[13];
+                const mouth14 = results.faceLandmarks[14];
+                const mouthCenter = {
+                    x: (mouth13.x + mouth14.x) / 2,
+                    y: (mouth13.y + mouth14.y) / 2
+                };
+                systemState.currentFaceResult = mouthCenter;
+
+                // 口元（静音アクティブエリア）のターゲット円描画
+                const mx = mouthCenter.x * canvasElement.width;
+                const my = mouthCenter.y * canvasElement.height;
+                canvasCtx.beginPath();
+                canvasCtx.arc(mx, my, 18, 0, 2 * Math.PI);
+                canvasCtx.strokeStyle = 'rgba(244, 63, 94, 0.75)'; // 赤い消音ターゲット枠
+                canvasCtx.lineWidth = 2;
+                canvasCtx.setLineDash([3, 4]); // 破線で精密機械風に
+                canvasCtx.stroke();
+                canvasCtx.setLineDash([]);
+            } else {
+                systemState.currentFaceResult = null;
+            }
+
+            // 2. 手部骨格の描画とアクション判定 (左右の手を統合。右手優先、無ければ左手)
+            const landmarks = results.rightHandLandmarks || results.leftHandLandmarks;
+
+            if (landmarks && landmarks.length > 0) {
+                // スケルトンラインとノードの描画
+                drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#6366f1', lineWidth: 4});
+                drawLandmarks(canvasCtx, landmarks, {color: '#ec4899', lineWidth: 1, radius: 5});
+
+                const detectedGesture = classifyGesture(landmarks);
+                systemState.currentDetectedGesture = detectedGesture;
+                const indexTip = landmarks[8]; // 人差し指先を基準点とする
+                
+                gestureHud.classList.remove('hidden');
+
+                if (detectedGesture === 'SHUSH_HEURISTIC') {
+                    // 口元シー（消音）検出
+                    hudGestureName.innerHTML = "🤫 検出：シー (消音アクション)";
+                    
+                    if (systemState.activeControlMode !== 'ACTIVE_SHUSH') {
+                        if (!systemState.activationTimerStart) {
+                            systemState.activationTimerStart = Date.now();
+                            logEvent("口元での「シー」ジェスチャーを検出。0.5秒保持のカウントを開始...", "info");
+                        }
+                        
+                        const holdDuration = Date.now() - systemState.activationTimerStart;
+                        const progress = Math.min(100, Math.round((holdDuration / 500) * 100));
+                        
+                        hudProgressBar.style.width = `${progress}%`;
+                        hudProgressText.textContent = `${progress}%`;
+
+                        // 指先と口元を繋ぐサイファイ調の接続スレッドラインを描画
+                        if (systemState.currentFaceResult) {
+                            const mouth = systemState.currentFaceResult;
+                            canvasCtx.beginPath();
+                            canvasCtx.moveTo(indexTip.x * canvasElement.width, indexTip.y * canvasElement.height);
+                            canvasCtx.lineTo(mouth.x * canvasElement.width, mouth.y * canvasElement.height);
+                            canvasCtx.strokeStyle = 'rgba(244, 63, 94, 0.8)';
+                            canvasCtx.lineWidth = 2.5;
+                            canvasCtx.stroke();
+                        }
+
+                        if (holdDuration >= 500) {
+                            transitionToMode('ACTIVE_SHUSH');
+                        }
+                    } else {
+                        hudProgressBar.style.width = `100%`;
+                        hudProgressText.textContent = `消音中`;
+                        drawInteractiveFeedbackRing(indexTip, 'rose');
+                    }
+                }
+                else if (detectedGesture === 'OK_HEURISTIC') {
+                    // OKジェスチャー（復元）検出
+                    hudGestureName.innerHTML = "👌 検出：OK (音量復帰アクション)";
+                    
+                    if (systemState.activeControlMode !== 'ACTIVE_RESTORE') {
+                        if (!systemState.activationTimerStart) {
+                            systemState.activationTimerStart = Date.now();
+                            logEvent("OKジェスチャーを検出。消音前音量の復元に向けて0.5秒保持のカウントを開始...", "info");
+                        }
+
+                        const holdDuration = Date.now() - systemState.activationTimerStart;
+                        const progress = Math.min(100, Math.round((holdDuration / 500) * 100));
+
+                        hudProgressBar.style.width = `${progress}%`;
+                        hudProgressText.textContent = `${progress}%`;
+
+                        if (holdDuration >= 500) {
+                            transitionToMode('ACTIVE_RESTORE');
+                        }
+                    } else {
+                        hudProgressBar.style.width = `100%`;
+                        hudProgressText.textContent = `復元中`;
+                        // 親指と食指の中間をターゲットとする
+                        const okTarget = {
+                            x: (landmarks[4].x + landmarks[8].x) / 2,
+                            y: (landmarks[4].y + landmarks[8].y) / 2
+                        };
+                        drawInteractiveFeedbackRing(okTarget, 'emerald');
+                    }
+                }
+                else if (detectedGesture === 'THREE_FINGER_HEURISTIC') {
+                    // 3本指高さ制御
+                    hudGestureName.textContent = "🖐️ 検出：3本指高さ調整";
+                    
+                    if (systemState.activeControlMode !== 'ACTIVE_VOLUME' && systemState.activeControlMode !== 'ACTIVE_BRIGHTNESS') {
+                        if (!systemState.activationTimerStart) {
+                            systemState.activationTimerStart = Date.now();
+                            logEvent("有効化ジェスチャーを検出：3本指を立てた状態、0.5秒保持のタイマーを開始...", "info");
+                        }
+                        
+                        const holdDuration = Date.now() - systemState.activationTimerStart;
+                        const progress = Math.min(100, Math.round((holdDuration / 500) * 100));
+                        
+                        hudProgressBar.style.width = `${progress}%`;
+                        hudProgressText.textContent = `${progress}%`;
+
+                        if (holdDuration >= 500) {
+                            // 左右スプリット分岐
+                            // カメラがCSSで反転しているため、ユーザーから見た左右とカメラの生座標を補正する
+                            // ユーザー視点の画面左側 = カメラ生座標 x > 0.5 (鏡像)
+                            const userX = indexTip.x;
+                            if (userX > 0.5) {
+                                systemState.mode2RefY = indexTip.y;
+                                systemState.mode2RefVal = systemState.brightness;
+                                transitionToMode('ACTIVE_BRIGHTNESS');
+                            } else {
+                                systemState.mode2RefY = indexTip.y;
+                                systemState.mode2RefVal = systemState.volume;
+                                transitionToMode('ACTIVE_VOLUME');
+                            }
+                        }
+                    } else {
+                        hudProgressBar.style.width = `100%`;
+                        hudProgressText.textContent = `有効中`;
+
+                        const dy = systemState.mode2RefY - indexTip.y; // 上に移動で dy が正となる
+                        const controlGain = 120; // 画面幅移動あたりの変化幅感度
+                        const updatedVal = systemState.mode2RefVal + (dy * controlGain);
+
+                        if (systemState.activeControlMode === 'ACTIVE_VOLUME') {
+                            setVolume(updatedVal);
+                            drawInteractiveFeedbackRing(indexTip, 'cyan');
+                        } else if (systemState.activeControlMode === 'ACTIVE_BRIGHTNESS') {
+                            setBrightness(updatedVal);
+                            drawInteractiveFeedbackRing(indexTip, 'amber');
+                        }
+                    }
+                } 
+                else {
+                    // 適合するジェスチャーなし、タイマーリセット
+                    hudGestureName.textContent = "無効なジェスチャー";
+                    hudProgressBar.style.width = `0%`;
+                    hudProgressText.textContent = `0%`;
+                    systemState.activationTimerStart = null;
+                    
+                    if (systemState.activeControlMode !== 'NONE' && systemState.activeControlMode !== 'ACTIVE_RESTORE') {
+                        transitionToMode('NONE');
+                    }
+                }
+
+            } else {
+                // 手の未検出时、タイマー・制御状態リセット
+                gestureHud.classList.add('hidden');
+                systemState.activationTimerStart = null;
+                if (systemState.activeControlMode !== 'NONE' && systemState.activeControlMode !== 'ACTIVE_RESTORE') {
+                    transitionToMode('NONE');
+                }
+            }
+            
+            canvasCtx.restore();
+        }
+
+        // 指基準点への呼吸インジケータサークルのオーバーレイ描画
+        function drawInteractiveFeedbackRing(coord, color) {
+            const px = coord.x * canvasElement.width;
+            const py = coord.y * canvasElement.height;
+            let ringColor = '#22d3ee';
+            if (color === 'amber') ringColor = '#fbbf24';
+            if (color === 'rose') ringColor = '#f43f5e';
+            if (color === 'emerald') ringColor = '#10b981';
+            
+            canvasCtx.beginPath();
+            canvasCtx.arc(px, py, 25, 0, 2 * Math.PI);
+            canvasCtx.strokeStyle = ringColor;
+            canvasCtx.lineWidth = 3;
+            canvasCtx.stroke();
+
+            const pulseRadius = 25 + 10 * Math.sin(Date.now() / 150);
+            canvasCtx.beginPath();
+            canvasCtx.arc(px, py, pulseRadius, 0, 2 * Math.PI);
+            canvasCtx.strokeStyle = `${ringColor}44`;
+            canvasCtx.lineWidth = 1.5;
+            canvasCtx.stroke();
+        }
+
+        // ==========================================
+        //  MediaPipe Holistic（全機能統合版）の構築
+        // ==========================================
+        const holistic = new Holistic({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`
+        });
+
+        holistic.setOptions({
+            modelComplexity: 1,
+            smoothLandmarks: true,
+            refineFaceLandmarks: true, // 高精度な口元の検出
+            minDetectionConfidence: 0.65,
+            minTrackingConfidence: 0.65
+        });
+
+        holistic.onResults(onResults);
+
+        // コンテナの伸縮に追従するリサイズイベントハンドラ
+        function handleResize() {
+            // キャンバス自体の解像度は onResults 内で同期するため、ここではCSSフィッティングに任せます
+        }
+        window.addEventListener('resize', handleResize);
+        handleResize();
+
+        // カメラトグルハンドリング
+        btnToggleCam.addEventListener('click', async () => {
+            if (!systemState.cameraActive) {
+                logEvent("カメラの使用権限をリクエスト中...", "info");
+                try {
+                    const constraints = {
+                        video: { width: 640, height: 480, facingMode: "user" }
+                    };
+                    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    videoElement.srcObject = stream;
+                    canvasPlaceholder.style.opacity = '0';
+                    setTimeout(() => canvasPlaceholder.classList.add('hidden'), 300);
+                    
+                    // 統合パイプライン：毎フレーム、Holistic モデルに一括送信
+                    systemState.cameraInstance = new Camera(videoElement, {
+                        onFrame: async () => {
+                            await holistic.send({ image: videoElement });
+                        },
+                        width: 640,
+                        height: 480
+                    });
+                    
+                    await systemState.cameraInstance.start();
+                    systemState.cameraActive = true;
+                    btnToggleCam.innerHTML = `<i class="fa-solid fa-square"></i> カメラを停止`;
+                    btnToggleCam.classList.replace('bg-indigo-600', 'bg-rose-600');
+                    btnToggleCam.classList.replace('hover:bg-indigo-500', 'hover:bg-rose-500');
+                    
+                    cameraStatusText.textContent = "カメラ接続中";
+                    cameraStatusText.classList.replace('bg-rose-500/10', 'bg-emerald-500/10');
+                    cameraStatusText.classList.replace('text-rose-400', 'text-emerald-400');
+                    cameraStatusText.classList.replace('border-rose-500/20', 'border-emerald-500/20');
+                    cameraStatusText.querySelector('span').classList.replace('bg-rose-500', 'bg-emerald-500');
+                    
+                    logEvent("カメラと顔・手部追跡パイプラインの起動に成功しました！", "success");
+                    handleResize();
+                } catch (err) {
+                    logEvent(`カメラの呼び出しに失敗しました: ${err.message}.`, "error");
+                    logEvent(`ヒント: デバイス設定やブラウザのカメラアクセス権限を確認してください。`, "warn");
+                }
+            } else {
+                // カメラストリーミングの停止とリソース解体
+                if (systemState.cameraInstance) {
+                    await systemState.cameraInstance.stop();
+                }
+                const stream = videoElement.srcObject;
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                }
+                videoElement.srcObject = null;
+                canvasPlaceholder.classList.remove('hidden');
+                canvasPlaceholder.style.opacity = '1';
+                
+                systemState.cameraActive = false;
+                btnToggleCam.innerHTML = `<i class="fa-solid fa-power-off"></i> カメラを起動`;
+                btnToggleCam.classList.replace('bg-rose-600', 'bg-indigo-600');
+                btnToggleCam.classList.replace('hover:bg-rose-500', 'hover:bg-indigo-500');
+                
+                cameraStatusText.textContent = "カメラ未接続";
+                cameraStatusText.classList.replace('bg-emerald-500/10', 'bg-rose-500/10');
+                cameraStatusText.classList.replace('text-emerald-400', 'text-rose-400');
+                cameraStatusText.classList.replace('border-emerald-500/20', 'border-rose-500/20');
+                cameraStatusText.querySelector('span').classList.replace('bg-emerald-500', 'bg-rose-500');
+                
+                logEvent("カメラが切断されました。システム待機状態に戻ります。", "warn");
+                transitionToMode('NONE');
+            }
+        });
+
+    </script>
+</body>
+</html>
