@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>手势中国象棋 - 全屏优化版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@700&display=swap');
+        
+        body { margin: 0; overflow: hidden; background-color: #1a1a1a; display: flex; font-family: 'Inter', system-ui; color: white; }
+        #game-container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; background: radial-gradient(circle, #2c2c2c 0%, #111 100%); }
+        canvas { position: absolute; border-radius: 8px; }
+        #board-canvas { z-index: 1; box-shadow: 0 20px 50px rgba(0,0,0,0.5); }
+        #ui-canvas { z-index: 2; pointer-events: none; }
+        
+        #video-container {
+            position: absolute; bottom: 20px; right: 20px; width: 200px; height: 150px;
+            border-radius: 12px; overflow: hidden; border: 2px solid #444; z-index: 10; background: #000;
+        }
+        #input_video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+        
+        #status-panel {
+            position: absolute; top: 20px; left: 20px; background: rgba(0, 0, 0, 0.85);
+            padding: 20px; border-radius: 12px; border: 1px solid #444; z-index: 10; min-width: 260px;
+        }
+        .turn-indicator { font-weight: bold; font-size: 1.4rem; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #333; }
+        .red-turn { color: #ff4d4d; }
+        .black-turn { color: #4d94ff; }
+        
+        /* 楷体字体设置 */
+        .piece-text { font-family: "Kaiti", "STKaiti", "楷体", "Noto Serif TC", serif; }
+
+        #loading {
+            position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: #1a1a1a; z-index: 100; display: flex; flex-direction: column; justify-content: center; align-items: center;
+        }
+        .spinner { border: 4px solid #333; border-top: 4px solid #ff4d4d; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <div id="loading">
+        <div class="spinner mb-4"></div>
+        <h2 class="text-xl font-bold">正在初始化摄像头与手势引擎...</h2>
+    </div>
+
+    <div id="status-panel">
+        <div id="current-turn" class="turn-indicator red-turn">回合：紅方</div>
+        <div id="active-state" class="text-yellow-500 font-bold mb-2 text-lg">等待五指張開激活...</div>
+        <div class="space-y-2">
+            <div id="gest-red" class="flex items-center gap-2 text-sm">
+                <span class="w-3 h-3 rounded-full bg-red-500"></span>
+                <span>紅方 (右手): <span id="state-red" class="text-gray-400">待命</span></span>
+            </div>
+            <div id="gest-black" class="flex items-center gap-2 text-sm opacity-50">
+                <span class="w-3 h-3 rounded-full bg-blue-500"></span>
+                <span>黑方 (左手): <span id="state-black" class="text-gray-400">待命</span></span>
+            </div>
+        </div>
+    </div>
+
+    <div id="game-container">
+        <canvas id="board-canvas"></canvas>
+        <canvas id="ui-canvas"></canvas>
+    </div>
+
+    <div id="video-container">
+        <video id="input_video" autoplay playsinline></video>
+    </div>
+
+    <script>
+        const Player = { RED: 'red', BLACK: 'black' };
+        const GameState = { IDLE: 0, SELECTING_PIECE: 1, PIECE_LOCKED: 2, MOVING_PIECE: 3 };
+        
+        // 使用繁体中文
+        const PieceType = { 
+            RED_KING: '帥', RED_MANDARIN: '仕', RED_ELEPHANT: '相', RED_KNIGHT: '傌', RED_ROOK: '俥', RED_CANNON: '砲', RED_PAWN: '兵',
+            BLK_KING: '將', BLK_MANDARIN: '士', BLK_ELEPHANT: '象', BLK_KNIGHT: '馬', BLK_ROOK: '車', BLK_CANNON: '砲', BLK_PAWN: '卒'
+        };
+
+        const ACTIVATION_TIME = 500; 
+        const LOCK_TIME = 500;       
+        const DRIFT_LOCK_MS = 400;   
+        const HIT_RADIUS_MULT = 0.85; 
+
+        let canvasW, canvasH, CELL_SIZE, offsetX, offsetY;
+        const bCanvas = document.getElementById('board-canvas');
+        const bCtx = bCanvas.getContext('2d');
+        const uiCanvas = document.getElementById('ui-canvas');
+        const uiCtx = uiCanvas.getContext('2d');
+
+        let board = Array(10).fill(null).map(() => Array(9).fill(null));
+        let currentTurn = Player.RED;
+
+        class Piece {
+            constructor(type, color, col, row) {
+                this.type = type; this.color = color; this.col = col; this.row = row; this.alive = true;
+            }
+        }
+
+        function initBoard() {
+            board = Array(10).fill(null).map(() => Array(9).fill(null));
+            const setup = [
+                // 黑方 (顶端)
+                { r: 0, c: [0, 8], t: PieceType.BLK_ROOK, color: Player.BLACK },
+                { r: 0, c: [1, 7], t: PieceType.BLK_KNIGHT, color: Player.BLACK },
+                { r: 0, c: [2, 6], t: PieceType.BLK_ELEPHANT, color: Player.BLACK },
+                { r: 0, c: [3, 5], t: PieceType.BLK_MANDARIN, color: Player.BLACK },
+                { r: 0, c: [4], t: PieceType.BLK_KING, color: Player.BLACK },
+                { r: 2, c: [1, 7], t: PieceType.BLK_CANNON, color: Player.BLACK },
+                { r: 3, c: [0, 2, 4, 6, 8], t: PieceType.BLK_PAWN, color: Player.BLACK },
+                // 红方 (底端)
+                { r: 9, c: [0, 8], t: PieceType.RED_ROOK, color: Player.RED },
+                { r: 9, c: [1, 7], t: PieceType.RED_KNIGHT, color: Player.RED },
+                { r: 9, c: [2, 6], t: PieceType.RED_ELEPHANT, color: Player.RED },
+                { r: 9, c: [3, 5], t: PieceType.RED_MANDARIN, color: Player.RED },
+                { r: 9, c: [4], t: PieceType.RED_KING, color: Player.RED },
+                { r: 7, c: [1, 7], t: PieceType.RED_CANNON, color: Player.RED },
+                { r: 6, c: [0, 2, 4, 6, 8], t: PieceType.RED_PAWN, color: Player.RED }
+            ];
+            setup.forEach(s => s.c.forEach(col => board[s.r][col] = new Piece(s.t, s.color, col, s.r)));
+        }
+
+        function canMoveTo(p, nc, nr) {
+            const dc = nc - p.col, dr = nr - p.row;
+            if (dc === 0 && dr === 0) return false;
+            const target = board[nr][nc];
+            if (target && target.color === p.color) return false;
+            
+            const countBetween = (c1, r1, c2, r2) => {
+                let cnt = 0;
+                if (c1 === c2) { for (let r = Math.min(r1, r2) + 1; r < Math.max(r1, r2); r++) if (board[r][c1]) cnt++; }
+                else { for (let c = Math.min(c1, c2) + 1; c < Math.max(c1, c2); c++) if (board[r1][c]) cnt++; }
+                return cnt;
+            };
+
+            const typeStr = p.type;
+            // 简化判断：根据字符判断规则
+            if (typeStr === '兵' || typeStr === '卒') {
+                const dir = p.color === Player.RED ? -1 : 1;
+                if (dr === dir && dc === 0) return true;
+                const crossed = p.color === Player.RED ? p.row <= 4 : p.row >= 5;
+                if (crossed && dr === 0 && Math.abs(dc) === 1) return true;
+                return false;
+            }
+            if (typeStr === '俥' || typeStr === '車') {
+                if (dc !== 0 && dr !== 0) return false; return countBetween(p.col, p.row, nc, nr) === 0;
+            }
+            if (typeStr === '砲') {
+                if (dc !== 0 && dr !== 0) return false; 
+                const cnt = countBetween(p.col, p.row, nc, nr); 
+                return target ? cnt === 1 : cnt === 0;
+            }
+            if (typeStr === '帥' || typeStr === '將') {
+                if (Math.abs(dc) + Math.abs(dr) !== 1) return false; if (nc < 3 || nc > 5) return false; return p.color === Player.RED ? nr >= 7 : nr <= 2;
+            }
+            if (typeStr === '傌' || typeStr === '馬') {
+                if (!((Math.abs(dc) === 1 && Math.abs(dr) === 2) || (Math.abs(dc) === 2 && Math.abs(dr) === 1))) return false; 
+                return !board[p.row + (Math.abs(dr) === 2 ? dr/2 : 0)][p.col + (Math.abs(dc) === 2 ? dc/2 : 0)];
+            }
+            if (typeStr === '相' || typeStr === '象') {
+                if (Math.abs(dc) !== 2 || Math.abs(dr) !== 2) return false; 
+                if (p.color === Player.RED ? nr < 5 : nr > 4) return false; 
+                return !board[p.row + dr/2][p.col + dc/2];
+            }
+            if (typeStr === '仕' || typeStr === '士') {
+                if (Math.abs(dc) !== 1 || Math.abs(dr) !== 1) return false; if (nc < 3 || nc > 5) return false; return p.color === Player.RED ? nr >= 7 : nr <= 2;
+            }
+            return false;
+        }
+
+        class PlayerState {
+            constructor(player) {
+                this.player = player; this.state = GameState.IDLE; this.timer = 0;
+                this.cursorPos = {x: -100, y: -100}; this.lastGesture = 'OTHER'; this.lastGestureChange = 0;
+                this.selectedPiece = null; this.validMoves = []; this.focusCol = -1; this.focusRow = -1;
+            }
+            reset() { this.state = GameState.IDLE; this.timer = 0; this.selectedPiece = null; this.validMoves = []; this.focusCol = -1; this.focusRow = -1; }
+        }
+
+        const redState = new PlayerState(Player.RED);
+        const blackState = new PlayerState(Player.BLACK);
+
+        function detectGesture(landmarks) {
+            const getDist = (p1, p2) => Math.hypot(p1.x - p2.x, p1.y - p2.y);
+            const isExt = (tip, base, wrist) => getDist(tip, wrist) > getDist(base, wrist);
+            const count = [isExt(landmarks[8],landmarks[6],landmarks[0]), isExt(landmarks[12],landmarks[10],landmarks[0]), 
+                           isExt(landmarks[16],landmarks[14],landmarks[0]), isExt(landmarks[20],landmarks[18],landmarks[0])].filter(Boolean).length;
+            return count >= 3 ? 'OPEN' : (count === 0 ? 'FIST' : 'OTHER');
+        }
+
+        function mapHandToBoard(landmarks, state, currentGesture) {
+            const now = Date.now();
+            if (currentGesture !== state.lastGesture) { state.lastGestureChange = now; state.lastGesture = currentGesture; }
+            
+            // 使用中指根部作为最稳定的锚点
+            const anchor = landmarks[9]; 
+            if (now - state.lastGestureChange < DRIFT_LOCK_MS && state.cursorPos.x > 0) return;
+
+            const targetX = (1 - anchor.x) * canvasW;
+            const targetY = anchor.y * canvasH;
+            
+            state.cursorPos.x = state.cursorPos.x < 0 ? targetX : state.cursorPos.x * 0.7 + targetX * 0.3;
+            state.cursorPos.y = state.cursorPos.y < 0 ? targetY : state.cursorPos.y * 0.7 + targetY * 0.3;
+
+            const col = Math.round((state.cursorPos.x - offsetX) / CELL_SIZE);
+            const row = Math.round((state.cursorPos.y - offsetY) / CELL_SIZE);
+            state.focusCol = -1; state.focusRow = -1;
+            
+            if (col >= 0 && col < 9 && row >= 0 && row < 10) {
+                const dist = Math.hypot(state.cursorPos.x - (offsetX + col * CELL_SIZE), state.cursorPos.y - (offsetY + row * CELL_SIZE));
+                if (dist < CELL_SIZE * HIT_RADIUS_MULT) {
+                    if (state.state === GameState.SELECTING_PIECE) {
+                        const p = board[row][col]; if (p && p.color === state.player) { state.focusCol = col; state.focusRow = row; }
+                    } else if (state.state === GameState.MOVING_PIECE) {
+                        if (state.validMoves.some(m => m.col === col && m.row === row)) { state.focusCol = col; state.focusRow = row; }
+                    }
+                }
+            }
+        }
+
+        function drawBoard() {
+            bCtx.clearRect(0, 0, canvasW, canvasH);
+            
+            // 绘制棋盘背景
+            bCtx.fillStyle = '#d4a373';
+            bCtx.fillRect(offsetX - CELL_SIZE/2, offsetY - CELL_SIZE/2, CELL_SIZE * 8 + CELL_SIZE, CELL_SIZE * 9 + CELL_SIZE);
+            
+            bCtx.strokeStyle = '#333'; bCtx.lineWidth = 2;
+            // 横线
+            for(let i=0; i<10; i++) { 
+                bCtx.beginPath(); 
+                bCtx.moveTo(offsetX, offsetY + i*CELL_SIZE); 
+                bCtx.lineTo(offsetX + 8*CELL_SIZE, offsetY + i*CELL_SIZE); 
+                bCtx.stroke(); 
+            }
+            // 纵线
+            for(let i=0; i<9; i++) {
+                bCtx.beginPath(); bCtx.moveTo(offsetX + i*CELL_SIZE, offsetY); bCtx.lineTo(offsetX + i*CELL_SIZE, offsetY + 4*CELL_SIZE); bCtx.stroke();
+                bCtx.beginPath(); bCtx.moveTo(offsetX + i*CELL_SIZE, offsetY + 5*CELL_SIZE); bCtx.lineTo(offsetX + i*CELL_SIZE, offsetY + 9*CELL_SIZE); bCtx.stroke();
+            }
+            
+            // 绘制棋子
+            board.flat().forEach(p => {
+                if (!p || !p.alive) return;
+                const x = offsetX + p.col * CELL_SIZE; const y = offsetY + p.row * CELL_SIZE; const radius = CELL_SIZE * 0.45;
+                
+                // 棋子底座
+                bCtx.beginPath(); bCtx.arc(x, y, radius, 0, Math.PI*2); bCtx.fillStyle = '#f3e5ab'; bCtx.fill(); 
+                bCtx.strokeStyle = '#8b4513'; bCtx.lineWidth = 3; bCtx.stroke();
+                
+                // 棋子内部圆圈
+                bCtx.beginPath(); bCtx.arc(x, y, radius * 0.85, 0, Math.PI*2); bCtx.strokeStyle = '#a67c52'; bCtx.lineWidth = 1; bCtx.stroke();
+                
+                // 楷体文字
+                bCtx.fillStyle = p.color === Player.RED ? '#d00' : '#222'; 
+                bCtx.font = `bold ${CELL_SIZE * 0.65}px "Kaiti", "STKaiti", "楷体", serif`;
+                bCtx.textAlign = 'center'; bCtx.textBaseline = 'middle'; 
+                bCtx.fillText(p.type, x, y + 2); // 微调Y偏移使其视觉居中
+            });
+        }
+
+        function onResults(results) {
+            document.getElementById('loading').style.display = 'none';
+            if (results.multiHandLandmarks && results.multiHandedness) {
+                for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+                    const landmarks = results.multiHandLandmarks[i];
+                    const label = results.multiHandedness[i].label; // Left/Right from MP perspective
+                    const player = label === 'Left' ? Player.BLACK : Player.RED;
+                    const state = player === Player.RED ? redState : blackState;
+                    if (currentTurn !== player) continue;
+                    
+                    const gesture = detectGesture(landmarks);
+                    mapHandToBoard(landmarks, state, gesture);
+                    const now = Date.now();
+
+                    switch(state.state) {
+                        case GameState.IDLE:
+                            if (gesture === 'OPEN') {
+                                if (!state.timer) state.timer = now;
+                                else if (now - state.timer > ACTIVATION_TIME) { state.state = GameState.SELECTING_PIECE; state.timer = 0; }
+                            } else state.timer = 0;
+                            break;
+                        case GameState.SELECTING_PIECE:
+                            if (gesture === 'FIST' && state.focusCol !== -1) {
+                                state.selectedPiece = board[state.focusRow][state.focusCol];
+                                state.state = GameState.PIECE_LOCKED; state.timer = now;
+                            }
+                            break;
+                        case GameState.PIECE_LOCKED:
+                            if (gesture === 'FIST') {
+                                if (now - state.timer > LOCK_TIME) {
+                                    state.validMoves = [];
+                                    for(let r=0; r<10; r++) for(let c=0; c<9; c++) if(canMoveTo(state.selectedPiece, c, r)) state.validMoves.push({col:c, row:r});
+                                    state.state = GameState.MOVING_PIECE; state.timer = 0;
+                                }
+                            } else { state.selectedPiece = null; state.state = GameState.SELECTING_PIECE; }
+                            break;
+                        case GameState.MOVING_PIECE:
+                            if (gesture === 'OPEN' && now - state.lastGestureChange > 300) {
+                                if (state.focusCol !== -1) {
+                                    const p = state.selectedPiece;
+                                    const target = board[state.focusRow][state.focusCol];
+                                    if (target && (target.type === '帥' || target.type === '將')) {
+                                        setTimeout(() => { alert(`${currentTurn === Player.RED ? '紅方' : '黑方'} 勝利！`); location.reload(); }, 100);
+                                    }
+                                    board[p.row][p.col] = null; p.row = state.focusRow; p.col = state.focusCol; board[p.row][p.col] = p;
+                                    currentTurn = (currentTurn === Player.RED) ? Player.BLACK : Player.RED;
+                                    updateTurnUI(); redState.reset(); blackState.reset(); drawBoard();
+                                } else { state.reset(); state.state = GameState.SELECTING_PIECE; }
+                            }
+                            break;
+                    }
+                }
+            }
+            drawUI();
+        }
+
+        function drawUI() {
+            uiCtx.clearRect(0, 0, canvasW, canvasH);
+            [redState, blackState].forEach(state => {
+                if (state.state === GameState.IDLE && state.timer === 0) return;
+                const {x, y} = state.cursorPos;
+                const color = state.player === Player.RED ? '#ff4d4d' : '#4d94ff';
+                
+                // 光标
+                uiCtx.beginPath(); uiCtx.arc(x, y, 12, 0, Math.PI*2);
+                uiCtx.fillStyle = color; uiCtx.shadowBlur = 15; uiCtx.shadowColor = color; uiCtx.fill(); uiCtx.shadowBlur = 0;
+                
+                // 进度条
+                if (state.timer > 0) {
+                    const dur = state.state === GameState.IDLE ? ACTIVATION_TIME : LOCK_TIME;
+                    const prog = Math.min(1, (Date.now() - state.timer) / dur);
+                    uiCtx.beginPath(); uiCtx.arc(x, y, 22, -Math.PI/2, -Math.PI/2 + Math.PI*2*prog);
+                    uiCtx.strokeStyle = 'white'; uiCtx.lineWidth = 4; uiCtx.stroke();
+                }
+
+                if (state.selectedPiece) {
+                    const sx = offsetX + state.selectedPiece.col * CELL_SIZE;
+                    const sy = offsetY + state.selectedPiece.row * CELL_SIZE;
+                    uiCtx.strokeStyle = 'rgba(255,255,255,0.8)'; uiCtx.lineWidth = 4;
+                    uiCtx.strokeRect(sx - CELL_SIZE/2, sy - CELL_SIZE/2, CELL_SIZE, CELL_SIZE);
+                }
+
+                if (state.focusCol !== -1) {
+                    const fx = offsetX + state.focusCol * CELL_SIZE;
+                    const fy = offsetY + state.focusRow * CELL_SIZE;
+                    uiCtx.strokeStyle = color; uiCtx.lineWidth = 3;
+                    uiCtx.strokeRect(fx - CELL_SIZE/2 + 4, fy - CELL_SIZE/2 + 4, CELL_SIZE - 8, CELL_SIZE - 8);
+                }
+
+                if (state.state === GameState.MOVING_PIECE) {
+                    state.validMoves.forEach(m => {
+                        uiCtx.beginPath(); uiCtx.arc(offsetX + m.col * CELL_SIZE, offsetY + m.row * CELL_SIZE, 10, 0, Math.PI*2);
+                        uiCtx.fillStyle = 'rgba(0, 255, 0, 0.6)'; uiCtx.shadowBlur = 10; uiCtx.shadowColor = 'lime'; uiCtx.fill(); uiCtx.shadowBlur = 0;
+                    });
+                }
+
+                document.getElementById(`state-${state.player}`).innerText = 
+                    state.state === GameState.IDLE ? '準備激活' :
+                    state.state === GameState.SELECTING_PIECE ? '正在選子' :
+                    state.state === GameState.PIECE_LOCKED ? '鎖定中...' : '選擇落子點';
+                if (currentTurn === state.player) document.getElementById('active-state').innerText = document.getElementById(`state-${state.player}`).innerText;
+            });
+        }
+
+        function updateTurnUI() {
+            const turnEl = document.getElementById('current-turn');
+            turnEl.innerText = `回合：${currentTurn === Player.RED ? '紅方' : '黑方'}`;
+            turnEl.className = `turn-indicator ${currentTurn === Player.RED ? 'red-turn' : 'black-turn'}`;
+            document.getElementById('gest-red').style.opacity = currentTurn === Player.RED ? '1' : '0.5';
+            document.getElementById('gest-black').style.opacity = currentTurn === Player.BLACK ? '1' : '0.5';
+        }
+
+        function resize() {
+            canvasW = window.innerWidth; canvasH = window.innerHeight;
+            bCanvas.width = uiCanvas.width = canvasW; bCanvas.height = uiCanvas.height = canvasH;
+            
+            // 计算格子大小，确保 9x10 棋盘完整可见并留出边距
+            const availableW = canvasW * 0.9;
+            const availableH = canvasH * 0.85;
+            CELL_SIZE = Math.min(availableW / 8, availableH / 9);
+            
+            // 精确计算居中偏移
+            offsetX = (canvasW - CELL_SIZE * 8) / 2;
+            offsetY = (canvasH - CELL_SIZE * 9) / 2;
+            
+            drawBoard();
+        }
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+        hands.onResults(onResults);
+
+        const camera = new Camera(document.getElementById('input_video'), {
+            onFrame: async () => { await hands.send({image: document.getElementById('input_video')}); },
+            width: 640, height: 480
+        });
+
+        window.onload = () => { initBoard(); resize(); camera.start(); window.addEventListener('resize', resize); };
+    </script>
+</body>
+</html>
