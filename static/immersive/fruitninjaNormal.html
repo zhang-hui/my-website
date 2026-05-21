@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ジェスチャーフルーツニンジャ - マルチプレイヤー協力・効果音修正版</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #222;
+            font-family: 'Microsoft YaHei', sans-serif;
+        }
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            cursor: none;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #fff;
+            pointer-events: none;
+            z-index: 10;
+        }
+        #video-preview {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 240px;
+            height: 180px;
+            border: 3px solid #f39c12;
+            border-radius: 10px;
+            overflow: hidden;
+            background: #000;
+        }
+        /* 鏡像プレビュー：直感に合わせてカメラを左右反転 */
+        #hand-canvas {
+            transform: scaleX(-1);
+            width: 100%;
+            height: 100%;
+        }
+        .score-board { font-size: 36px; font-weight: bold; color: #f1c40f; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); }
+        .mode-status { 
+            font-size: 18px; 
+            margin-top: 10px;
+            padding: 8px 15px;
+            border-radius: 8px;
+            background: rgba(0,0,0,0.6);
+            display: inline-block;
+        }
+        .hand-count { color: #3498db; font-weight: bold; margin-bottom: 5px; }
+        .active { color: #2ecc71; border: 1px solid #2ecc71; }
+        .inactive { color: #e74c3c; border: 1px solid #e74c3c; }
+        #start-prompt {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 20px 40px;
+            border-radius: 30px;
+            font-size: 24px;
+            z-index: 100;
+            cursor: pointer;
+            border: 2px solid #f1c40f;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+<div id="start-prompt" onclick="this.style.display='none'; initAudio();">ここをタップしてカメラと効果音を有効化</div>
+
+<div id="game-container">
+    <div id="ui-layer">
+        <div class="score-board">スコア: <span id="score">0</span></div>
+        <div class="hand-count">現在のプレイヤーハンド: <span id="hand-num">0</span> / 4</div>
+        <div id="mode-ui" class="mode-status inactive">アクティブ方法：人差し指を伸ばす</div>
+    </div>
+    <canvas id="game-canvas"></canvas>
+    <!-- 非表示の元ビデオストリーム -->
+    <video id="webcam" style="display:none;" playsinline></video>
+    <!-- 右下プレビューウィンドウ -->
+    <div id="video-preview">
+        <canvas id="hand-canvas"></canvas>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('game-canvas');
+    const ctx = canvas.getContext('2d');
+    const handCanvas = document.getElementById('hand-canvas');
+    const handCtx = handCanvas.getContext('2d');
+    const videoElement = document.getElementById('webcam');
+    const scoreElement = document.getElementById('score');
+    const handNumElement = document.getElementById('hand-num');
+    const modeUI = document.getElementById('mode-ui');
+
+    let score = 0;
+    let fruits = [];
+    let particles = [];
+    let handsData = {}; 
+
+    // --- 効果音処理システム ---
+    let audioCtx;
+    function initAudio() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+    }
+
+    function playThrowSound() {
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(600, audioCtx.currentTime + 0.1);
+        gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.1);
+    }
+
+    function playSliceSound() {
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.05);
+        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.05);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.05);
+    }
+
+    const FRUIT_TYPES = [
+        { color: '#f1c40f', label: '🍋' },
+        { color: '#e74c3c', label: '🍎' },
+        { color: '#2ecc71', label: '🍉' },
+        { color: '#f39c12', label: '🍊' },
+        { color: '#9b59b6', label: '🍇' }
+    ];
+
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        // プレビューキャンバスの描画解像度を設定
+        handCanvas.width = 640;
+        handCanvas.height = 480;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    class Fruit {
+        constructor() {
+            this.type = FRUIT_TYPES[Math.floor(Math.random() * FRUIT_TYPES.length)];
+            this.radius = 45 + Math.random() * 15;
+            this.x = Math.random() * (canvas.width - 200) + 100;
+            this.y = canvas.height + this.radius;
+            this.vx = (Math.random() - 0.5) * 10;
+            this.vy = -(Math.random() * 8 + 16);
+            this.gravity = 0.22;
+            this.isSliced = false;
+            this.angle = 0;
+            this.rotationSpeed = (Math.random() - 0.5) * 0.12;
+        }
+
+        update() {
+            this.vy += this.gravity;
+            this.x += this.vx;
+            this.y += this.vy;
+            this.angle += this.rotationSpeed;
+            return this.y < canvas.height + 150;
+        }
+
+        draw() {
+            if (this.isSliced) return;
+            ctx.save();
+            ctx.translate(this.x, this.y);
+            ctx.rotate(this.angle);
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = this.type.color;
+            ctx.beginPath();
+            ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+            ctx.fillStyle = this.type.color;
+            ctx.fill();
+            ctx.font = `${this.radius * 1.2}px serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.shadowBlur = 0;
+            ctx.fillText(this.type.label, 0, 0);
+            ctx.restore();
+        }
+    }
+
+    class Particle {
+        constructor(x, y, color) {
+            this.x = x; this.y = y; this.color = color;
+            this.vx = (Math.random() - 0.5) * 12;
+            this.vy = (Math.random() - 0.5) * 12;
+            this.life = 1.0;
+            this.size = Math.random() * 5 + 2;
+        }
+        update() {
+            this.x += this.vx; this.y += this.vy;
+            this.vy += 0.2; this.life -= 0.025;
+            return this.life > 0;
+        }
+        draw() {
+            ctx.globalAlpha = this.life;
+            ctx.fillStyle = this.color;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+        }
+    }
+
+    // --- コア修正：プレビュー画像描画 ---
+    function onResults(results) {
+        // 1. カメラ映像を右下の小キャンバスに描画
+        handCtx.save();
+        handCtx.clearRect(0, 0, handCanvas.width, handCanvas.height);
+        handCtx.drawImage(results.image, 0, 0, handCanvas.width, handCanvas.height);
+        
+        const activeHandCount = results.multiHandLandmarks ? results.multiHandLandmarks.length : 0;
+        handNumElement.innerText = activeHandCount;
+
+        for (let id in handsData) handsData[id].updated = false;
+
+        if (results.multiHandLandmarks) {
+            results.multiHandLandmarks.forEach((landmarks, index) => {
+                const id = index;
+                if (!handsData[id]) {
+                    handsData[id] = { path: [], lastPos: { x: 0, y: 0 }, active: false };
+                }
+
+                // プレビューウィンドウに骨格点を描画
+                handCtx.fillStyle = `hsl(${(id * 90) % 360}, 70%, 50%)`;
+                landmarks.forEach(pt => {
+                    handCtx.beginPath();
+                    handCtx.arc(pt.x * handCanvas.width, pt.y * handCanvas.height, 4, 0, Math.PI*2);
+                    handCtx.fill();
+                });
+
+                const indexTip = landmarks[8];
+                const indexBase = landmarks[5];
+                // ゲームメインキャンバス座標（鏡像処理）
+                const currentX = (1 - indexTip.x) * canvas.width;
+                const currentY = indexTip.y * canvas.height;
+
+                const isCurrentlyActive = indexTip.y < indexBase.y;
+                handsData[id].active = isCurrentlyActive;
+                handsData[id].updated = true;
+
+                if (isCurrentlyActive) {
+                    handsData[id].path.push({ x: currentX, y: currentY, time: Date.now() });
+                    if (handsData[id].lastPos.x !== 0) {
+                        checkSlice(handsData[id].lastPos.x, handsData[id].lastPos.y, currentX, currentY);
+                    }
+                } else {
+                    handsData[id].path = [];
+                }
+                handsData[id].lastPos = { x: currentX, y: currentY };
+            });
+        }
+        handCtx.restore();
+
+        for (let id in handsData) if (!handsData[id].updated) delete handsData[id];
+
+        const anyActive = Object.values(handsData).some(h => h.active);
+        modeUI.innerText = anyActive ? "切り刻み状態：戦闘中！" : "アクティブ待ち：人差し指を伸ばしてください";
+        modeUI.className = anyActive ? "mode-status active" : "mode-status inactive";
+    }
+
+    function checkSlice(x1, y1, x2, y2) {
+        fruits.forEach(fruit => {
+            if (fruit.isSliced) return;
+            const dist = distToSegment({x: fruit.x, y: fruit.y}, {x: x1, y: y1}, {x: x2, y: y2});
+            if (dist < fruit.radius) {
+                fruit.isSliced = true;
+                score += 10;
+                scoreElement.innerText = score;
+                playSliceSound();
+                for(let i=0; i<20; i++) {
+                    particles.push(new Particle(fruit.x, fruit.y, fruit.type.color));
+                }
+            }
+        });
+    }
+
+    function distToSegment(p, v, w) {
+        const l2 = Math.pow(v.x - w.x, 2) + Math.pow(v.y - w.y, 2);
+        if (l2 === 0) return Math.sqrt(Math.pow(p.x - v.x, 2) + Math.pow(p.y - v.y, 2));
+        let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+        t = Math.max(0, Math.min(1, t));
+        return Math.sqrt(Math.pow(p.x - (v.x + t * (w.x - v.x)), 2) + Math.pow(p.y - (v.y + t * (w.y - v.y)), 2));
+    }
+
+    function gameLoop() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const grad = ctx.createRadialGradient(canvas.width/2, canvas.height/2, 0, canvas.width/2, canvas.height/2, canvas.width);
+        grad.addColorStop(0, '#2c3e50'); grad.addColorStop(1, '#000000');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const now = Date.now();
+        for (let id in handsData) {
+            let h = handsData[id];
+            if (h.path.length > 1) {
+                ctx.beginPath();
+                ctx.moveTo(h.path[0].x, h.path[0].y);
+                for (let i = 1; i < h.path.length; i++) ctx.lineTo(h.path[i].x, h.path[i].y);
+                ctx.strokeStyle = `hsla(${(id * 90) % 360}, 100%, 80%, 0.8)`;
+                ctx.lineWidth = 10; ctx.lineCap = 'round';
+                ctx.shadowBlur = 15; ctx.shadowColor = "white";
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+                h.path = h.path.filter(p => now - p.time < 150);
+            }
+        }
+
+        if (Math.random() < 0.035) {
+            fruits.push(new Fruit());
+            playThrowSound();
+        }
+        fruits = fruits.filter(f => {
+            const alive = f.update();
+            f.draw();
+            return alive;
+        });
+
+        particles = particles.filter(p => {
+            const alive = p.update();
+            p.draw();
+            return alive;
+        });
+
+        requestAnimationFrame(gameLoop);
+    }
+
+    const hands = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+        maxNumHands: 4,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.6,
+        minTrackingConfidence: 0.6
+    });
+
+    hands.onResults(onResults);
+
+    const camera = new Camera(videoElement, {
+        onFrame: async () => {
+            await hands.send({image: videoElement});
+        },
+        width: 640,
+        height: 480
+    });
+
+    camera.start();
+    gameLoop();
+</script>
+</body>
+</html> 
